@@ -1,0 +1,15 @@
+{
+  "authMode": "hybrid",
+  "enabled": true,
+  "providerName": "Oracle SSO",
+  "issuer": "https://your-oracle-identity-domain",
+  "clientId": "fill-your-client-id",
+  "clientSecret": "fill-your-client-secret",
+  "redirectUri": "http://your-host:3210/auth/callback",
+  "postLogoutRedirectUri": "http://your-host:3210/login",
+  "registrationUrl": "https://your-access-request-page",
+  "supportUrl": "https://your-password-help-page",
+  "scope": "openid profile email",
+  "cookieSecret": "fill-a-long-random-server-secret",
+  "sessionTtlHours": 12
+}

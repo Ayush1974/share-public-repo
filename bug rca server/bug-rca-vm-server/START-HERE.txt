@@ -1,0 +1,66 @@
+﻿Bug RCA VM Server Package
+
+Use this package on the VM or server host only.
+
+Runtime:
+- run the hosted UI in combined mode
+- run Codex on the VM for hosted shared workspaces such as shared://simphony
+- keep sessions, artifacts, and RCA execution on the VM for shared runs
+- expose hosted shared workspace APIs from the VM when configured
+
+Workspace mapping:
+- hosted workspace ID users enter in the UI: shared://simphony
+- on the hosted VM UI, Browse Workspace can open a local or UNC folder picker when a local client agent is reachable directly or through the broker; users still type shared://simphony manually for the hosted VM workspace
+- VM folder behind that ID: whatever path you configure in SHARED_WORKSPACE_ROOTS
+- legacy alias still accepted: shared://simphony-temp
+- do not use file://BURVM08103/simphony/temp for hosted API mode
+- in Product mode, Simphony/RNA/C&C/FLM default to C:\Code\simphony, C:\Code\rna, C:\Code\cnc, and C:\Code\flm
+
+Main URL:
+http://burvm08103.us.oracle.com:3210/home
+
+Key VM commands:
+- install-server-startup.cmd
+- start-server-service.cmd
+- stop-server-service.cmd
+- stop-service.cmd
+- start-server.cmd
+- npm run stop:server
+
+Shared checkout maintenance:
+- install-simphony-nightly-update.cmd
+- run-simphony-nightly-update-now.cmd
+- remove-simphony-nightly-update.cmd
+- install-gbujira-pat-rotation.cmd
+- run-gbujira-pat-rotation-now.cmd
+- remove-gbujira-pat-rotation.cmd
+
+Important:
+- this package is for the VM host only
+- if you need a quick map of what each folder/file is for, open docs\FOLDER-STRUCTURE.md
+- users can still receive the separate bug rca client agent.zip package for direct local/UNC workspaces
+- Product mode runs use the product checkout folders under C:\Code on the VM
+- hosted saved sessions and current artifact views are now scoped to the signed-in UI user
+- the hosted VM UI can open a folder picker for local or UNC paths through a connected local client agent; hosted shared://simphony still must be typed manually
+- hosted shared:// runs now start Codex with full-access mode on the VM so the packaged shared-workspace helper can execute without approval prompts
+- configure SHARED_WORKSPACE_ROOTS explicitly when you want hosted shared:// workspaces on the VM
+- install the Windows startup task while signed in as the VM account that already completed codex login
+- if an older startup task was installed from a previous package, remove and reinstall it so it no longer runs as SYSTEM
+- if ChatGPT CLI sign-in is not available for the VM account, use API-key mode instead
+- supported API-key env vars: OPENAI_API_KEY, CODEX_API_KEY, ORACLE_CODE_ASSIST_API_KEY, OCA_API_KEY
+- supported provider base-url env vars: OPENAI_BASE_URL, CODEX_BASE_URL, ORACLE_CODE_ASSIST_BASE_URL, OCA_BASE_URL
+- do not set those API-key vars to an Oracle SSO or JWT token when you are targeting the OpenAI-hosted endpoint; hosted runs now reject that before start
+- Jira MCP setup reference is documented in references\JIRA_MCP_SETUP.md
+- BugDB workflow guidance comes from references\BUGINTWFLOW.md and references\.clinerules; no BugDB MCP server is required
+- this package now supports Jira MCP either as a URL entry or as a command-based MCP object in mcp-servers.json
+- .env in the package root is auto-loaded on startup, so keep real OCA and Jira tokens there instead of in mcp-servers.json
+- ${VAR} and $VAR placeholders inside mcp-servers.json are expanded from that runtime environment
+- shipped Jira MCP examples are present in mcp-servers.json but disabled by default, including mcp-atlassian-gbujira
+- Oracle Code Assist example:
+  set ORACLE_CODE_ASSIST_API_KEY=your-regenerated-oca-key
+  set ORACLE_CODE_ASSIST_BASE_URL=https://code-internal.aiservice.us-chicago-1.oci.oraclecloud.com/20250206/app/litellm
+  set CODEX_MODEL_PROVIDER=oracle-code-assist
+  set CODEX_PROVIDER_ID=oca
+- if hosted runs fail with `0xC0000139`, the Codex native Windows binary is incompatible with that VM build; use a newer Windows VM or fall back to the local client agent for execution
+- on Windows build `10.0.14393`, this package now blocks hosted `shared://` execution immediately and tells the operator to use a newer VM or the local client agent
+

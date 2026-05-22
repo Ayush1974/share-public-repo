@@ -1,0 +1,102 @@
+﻿[
+    {
+        "module":  "bug rca client agent",
+        "fileCount":  137,
+        "containerOffset":  1,
+        "bucketCounts":  [
+                             {
+                                 "name":  "archives",
+                                 "count":  1
+                             },
+                             {
+                                 "name":  "other",
+                                 "count":  136
+                             }
+                         ],
+        "indexFile":  "docs/share-index/modules/bug-rca-client-agent.md"
+    },
+    {
+        "module":  "bug rca server",
+        "fileCount":  42241,
+        "containerOffset":  2,
+        "bucketCounts":  [
+                             {
+                                 "name":  "automation-scripts",
+                                 "count":  24
+                             },
+                             {
+                                 "name":  "data-runtime-and-state",
+                                 "count":  9
+                             },
+                             {
+                                 "name":  "deployment",
+                                 "count":  6
+                             },
+                             {
+                                 "name":  "documentation",
+                                 "count":  5
+                             },
+                             {
+                                 "name":  "entrypoints-config-and-root-docs",
+                                 "count":  29
+                             },
+                             {
+                                 "name":  "library-code",
+                                 "count":  30
+                             },
+                             {
+                                 "name":  "reference-material",
+                                 "count":  5
+                             },
+                             {
+                                 "name":  "served-ui-assets",
+                                 "count":  6730
+                             },
+                             {
+                                 "name":  "skills-and-agents",
+                                 "count":  2
+                             },
+                             {
+                                 "name":  "tests",
+                                 "count":  1
+                             },
+                             {
+                                 "name":  "ui-source-and-build",
+                                 "count":  35400
+                             }
+                         ],
+        "indexFile":  "docs/share-index/modules/bug-rca-server.md"
+    },
+    {
+        "module":  "docs",
+        "fileCount":  7,
+        "containerOffset":  1,
+        "bucketCounts":  [
+                             {
+                                 "name":  "entrypoints-config-and-root-docs",
+                                 "count":  2
+                             },
+                             {
+                                 "name":  "other",
+                                 "count":  4
+                             },
+                             {
+                                 "name":  "reference-material",
+                                 "count":  1
+                             }
+                         ],
+        "indexFile":  "docs/share-index/modules/docs.md"
+    },
+    {
+        "module":  "root-files",
+        "fileCount":  1,
+        "containerOffset":  null,
+        "bucketCounts":  [
+                             {
+                                 "name":  "root-files",
+                                 "count":  1
+                             }
+                         ],
+        "indexFile":  "docs/share-index/modules/root-files.md"
+    }
+]

@@ -1,0 +1,35 @@
+﻿Bug RCA Local Client Agent
+
+Use this package on user machines only.
+
+Purpose:
+- pair the browser opened on the hosted VM UI with the local machine
+- run Codex locally on the user machine
+
+Workspace examples:
+- local folder on this machine: C:\code\simphony
+- Windows direct network share: \\BURVM08103\simphony\temp
+- use this package for local or UNC paths only
+
+Hosted UI:
+http://burvm08103.us.oracle.com:3210/home
+
+Windows quick start:
+1. codex login
+2. .\INSTALL-LOCAL-AGENT.cmd
+3. cmd /c START-LOCAL-AGENT.cmd
+
+Linux/macOS quick start:
+1. codex login
+2. bash ./INSTALL-LOCAL-AGENT.sh
+3. bash ./START-LOCAL-AGENT.sh
+
+Local health:
+http://127.0.0.1:3210/api/health
+
+Docs:
+- README.md
+- docs\PREREQUISITES.md
+- docs\USER-GUIDE.md
+- docs\FOLDER-STRUCTURE.md
+

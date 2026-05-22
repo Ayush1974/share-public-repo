@@ -1,0 +1,4 @@
+interface:
+  display_name: "Simphony Bug RCA Pipeline"
+  short_description: "BugDB-first Simphony RCA workflow"
+  default_prompt: "Use $simphony-bug-rca-pipeline to analyze a Simphony bug end-to-end with BugDB evidence, deep RCA, self-feedback verification, and a step-by-step solution. Do not perform UI automation unless the user's current input after the fix explicitly says `UI automation`, `UI automation testing`, or an unmistakably equivalent UI-driving request; builds and targeted tests are allowed before that."

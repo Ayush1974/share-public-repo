@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Register | Oracle Restaurants Issue Investigation Tool</title>
+    <link rel="icon" type="image/png" href="/assets/oracle-logo.png?v=20260427-2" />
+    <link rel="stylesheet" href="/styles.css?v=20260426-1" />
+  </head>
+  <body class="login-body">
+    <main class="login-shell">
+      <section class="auth-frame">
+        <header class="auth-topbar">
+          <div class="auth-brand-lockup">
+            <img class="oracle-logo auth-oracle-logo" src="/styles/images/oracle_logo.svg" alt="Oracle" />
+            <div class="auth-brand-copy">
+              <p class="brand-kicker">Oracle Restaurants</p>
+              <h1>Issue Investigation Tool</h1>
+              <p class="auth-brand-subcopy">Create access using the same visual system as the main tool.</p>
+            </div>
+          </div>
+        </header>
+
+        <section class="auth-main">
+          <section class="login-panel">
+            <div class="login-brand">
+              <p class="brand-kicker">Register</p>
+              <h2>Create access</h2>
+              <p class="login-subcopy">Register a simple Oracle email based account for the issue investigation tool.</p>
+            </div>
+
+            <form id="registerForm" class="login-form" novalidate>
+              <label class="login-field">
+                <span>Name</span>
+                <input
+                  id="registerName"
+                  name="name"
+                  type="text"
+                  autocomplete="name"
+                  placeholder="Enter your name"
+                />
+              </label>
+
+              <label class="login-field">
+                <span>Oracle Email</span>
+                <input
+                  id="registerEmail"
+                  name="email"
+                  type="email"
+                  autocomplete="username"
+                  inputmode="email"
+                  placeholder="name@oracle.com"
+                />
+              </label>
+
+              <label class="login-field">
+                <span>Password</span>
+                <div class="password-input-row">
+                  <input
+                    id="registerPassword"
+                    name="password"
+                    type="password"
+                    autocomplete="new-password"
+                    placeholder="Minimum 8 characters"
+                  />
+                  <button
+                    id="registerPasswordToggle"
+                    class="password-visibility-toggle"
+                    type="button"
+                    aria-controls="registerPassword"
+                    aria-pressed="false"
+                  >Show</button>
+                </div>
+              </label>
+
+              <div class="password-strength-panel" aria-live="polite">
+                <div class="password-strength-head">
+                  <span>Password strength</span>
+                  <strong id="passwordStrengthLabel" class="password-strength-value password-strength-weak">Weak</strong>
+                </div>
+                <div class="password-strength-bar">
+                  <span id="passwordStrengthBar" class="password-strength-bar-fill password-strength-weak"></span>
+                </div>
+                <div id="passwordStrengthHint" class="password-strength-hint">Use 8+ characters with uppercase, lowercase, number, and special character.</div>
+                <ul class="password-checklist">
+                  <li id="passwordCheckLength" class="password-check-item">8+ characters</li>
+                  <li id="passwordCheckUppercase" class="password-check-item">Uppercase letter</li>
+                  <li id="passwordCheckLowercase" class="password-check-item">Lowercase letter</li>
+                  <li id="passwordCheckNumber" class="password-check-item">Number</li>
+                  <li id="passwordCheckSpecial" class="password-check-item">Special character</li>
+                  <li id="passwordCheckPersonalInfo" class="password-check-item">Does not include your Oracle email</li>
+                </ul>
+              </div>
+
+              <label class="login-field">
+                <span>Confirm Password</span>
+                <div class="password-input-row">
+                  <input
+                    id="registerConfirmPassword"
+                    name="confirmPassword"
+                    type="password"
+                    autocomplete="new-password"
+                    placeholder="Re-enter password"
+                  />
+                  <button
+                    id="registerConfirmPasswordToggle"
+                    class="password-visibility-toggle"
+                    type="button"
+                    aria-controls="registerConfirmPassword"
+                    aria-pressed="false"
+                  >Show</button>
+                </div>
+              </label>
+              <div id="confirmPasswordHint" class="password-confirm-hint" hidden></div>
+
+              <div id="registerMessage" class="login-message" hidden></div>
+              <div id="registerError" class="login-message login-message-error" hidden></div>
+
+              <div class="login-form-actions">
+                <button id="registerSubmitButton" type="submit" class="primary-button login-button">Register</button>
+                <a href="/login" class="login-secondary-link">Back to Login</a>
+              </div>
+            </form>
+
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/register.js?v=20260426-1"></script>
+  </body>
+</html>

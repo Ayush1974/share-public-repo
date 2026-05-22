@@ -1,0 +1,96 @@
+approval_policy = "on-request"
+model_provider = "oca"
+preferred_auth_method = "apikey"
+model = "gpt-5.4"
+profile = "gpt-5-3-codex"
+sandbox_mode = "workspace-write"
+web_search_request = true
+
+trust_level = "trusted"
+model_reasoning_effort = "medium"
+
+[model_providers.oca]
+name = "Oracle Code Assist"
+base_url = "REPLACE_WITH_THE_REAL_OCA_RESPONSES_COMPATIBLE_BASE_URL"
+http_headers = { "client" = "codex-cli", "client-version" = "0" }
+model = "gpt5"
+wire_api = "responses"
+
+[profiles.gpt-4-1]
+model = "gpt-4.1"
+model_provider = "oca"
+review_model = "gpt-4.1"
+
+[profiles.gpt-5]
+model = "gpt5"
+model_provider = "oca"
+review_model = "gpt5"
+
+[profiles.gpt-5-2]
+model = "gpt-5.2"
+model_provider = "oca"
+review_model = "gpt-5.2"
+
+[profiles.gpt-5-codex]
+model = "gpt-5-codex"
+model_provider = "oca"
+review_model = "gpt-5-codex"
+personality = "pragmatic"
+
+[profiles.gpt-5-1-codex]
+model = "gpt-5.1-codex"
+model_provider = "oca"
+review_model = "gpt-5.1-codex"
+personality = "pragmatic"
+
+[profiles.gpt-5-1-codex-mini]
+model = "gpt-5.1-codex-mini"
+model_provider = "oca"
+review_model = "gpt-5.1-codex-mini"
+personality = "pragmatic"
+
+[profiles.gpt-5-1-codex-max]
+model = "gpt-5.1-codex-max"
+model_provider = "oca"
+review_model = "gpt-5.1-codex-max"
+personality = "pragmatic"
+
+[profiles.gpt-5-2-codex]
+model = "gpt-5.2-codex"
+model_provider = "oca"
+review_model = "gpt-5.2-codex"
+personality = "pragmatic"
+
+[profiles.gpt-5-3-codex]
+model = "gpt-5.4"
+model_provider = "oca"
+review_model = "gpt-5.3-codex"
+personality = "pragmatic"
+model_reasoning_effort = "high"
+
+[profiles.gpt-5-3-codex.windows]
+sandbox = "elevated"
+
+[profiles.gpt-5-4]
+model = "gpt-5.4"
+model_provider = "oca"
+review_model = "gpt-5.4"
+personality = "pragmatic"
+
+[profiles.gpt-5-4-pro]
+model = "gpt-5.4-pro"
+model_provider = "oca"
+review_model = "gpt-5.4-pro"
+personality = "pragmatic"
+
+[windows]
+sandbox = "elevated"
+
+[notice.model_migrations]
+"gpt-5.3-codex" = "gpt-5.4"
+
+[mcp_servers.bugdb]
+enabled = true
+startup_timeout_sec = 120
+url = "http://REPLACE_WITH_BUGDB_MCP_HOST:PORT/mcp"
+bearer_token_env_var = "BUGDB_MCP_BEARER_TOKEN"

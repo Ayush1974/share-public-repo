@@ -1,0 +1,17 @@
+{
+  "name": "simphony-bug-rca-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local HTML UI that streams Codex output for the simphony-bug-rca-pipeline skill.",
+  "scripts": {
+    "start": "node ./scripts/run-bug-rca-ui.js --foreground --server-mode agent --port 3210 --host 127.0.0.1 --codex-full-access true --require-elevated-execution true",
+    "start:bg": "node ./scripts/run-bug-rca-ui.js --background --server-mode agent --port 3210 --host 127.0.0.1 --codex-full-access true --require-elevated-execution true",
+    "start:server": "node ./scripts/run-bug-rca-ui.js --foreground --server-mode ui --port 3210 --host 0.0.0.0 --codex-full-access false --require-elevated-execution false",
+    "start:agent": "node ./scripts/run-bug-rca-ui.js --foreground --server-mode agent --port 3210 --host 127.0.0.1 --codex-full-access true --require-elevated-execution true",
+    "install:server:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\install-server-startup.ps1",
+    "remove:server:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\remove-server-startup.ps1",
+    "install:agent:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\install-agent-startup.ps1",
+    "install:agent:linux": "bash ./scripts/install-agent-startup-linux.sh",
+    "install:agent:macos": "bash ./scripts/install-agent-startup-macos.sh"
+  }
+}

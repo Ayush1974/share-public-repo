@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Oracle Restaurants Sign In</title>
+    <link rel="icon" type="image/png" href="/assets/oracle-logo.png?v=20260427-2" />
+    <link rel="stylesheet" href="/styles.css?v=20260426-1" />
+  </head>
+  <body class="login-body">
+    <main class="login-shell">
+      <section class="login-panel">
+        <div class="login-brand">
+          <img class="oracle-logo login-oracle-logo" src="/assets/oracle-logo.png?v=20260425-6" alt="Oracle" />
+          <p class="brand-kicker">Oracle Restaurants</p>
+          <h1>Issue Investigation Workspace</h1>
+          <p id="loginSubcopy" class="login-subcopy">Choose how you want to continue into the issue investigation workspace.</p>
+        </div>
+
+        <div id="loginChoiceRow" class="login-choice-row">
+          <button id="oracleSsoChoiceButton" type="button" class="primary-button login-choice-button">Continue with SSO sign-in</button>
+          <button id="passwordChoiceButton" type="button" class="login-secondary-link login-choice-button">Continue sign-in with password</button>
+        </div>
+
+        <form id="loginForm" class="login-form" novalidate hidden aria-hidden="true">
+          <label class="login-field">
+            <span>Oracle Email</span>
+            <input
+              id="loginEmail"
+              name="email"
+              type="email"
+              autocomplete="username"
+              inputmode="email"
+              placeholder="name@oracle.com"
+            />
+          </label>
+
+          <label id="passwordField" class="login-field">
+            <span>Password</span>
+            <div class="password-input-row">
+              <input
+                id="loginPassword"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                placeholder="Enter password"
+              />
+              <button
+                id="loginPasswordToggle"
+                class="password-visibility-toggle"
+                type="button"
+                aria-controls="loginPassword"
+                aria-pressed="false"
+              >Show</button>
+            </div>
+          </label>
+
+          <div id="loginMessage" class="login-message" hidden></div>
+          <div id="loginError" class="login-message login-message-error" hidden></div>
+
+          <div class="login-form-actions">
+            <button id="loginSubmitButton" type="submit" class="primary-button login-button">Sign in</button>
+          </div>
+        </form>
+
+        <div id="registerLinks" class="login-links" hidden aria-hidden="true">
+          <span class="login-inline-text">First time here?</span>
+          <button id="registerNowButton" type="button" class="login-inline-link">Register now</button>
+        </div>
+
+      </section>
+    </main>
+
+    <script src="/login.js?v=20260426-1"></script>
+  </body>
+</html>

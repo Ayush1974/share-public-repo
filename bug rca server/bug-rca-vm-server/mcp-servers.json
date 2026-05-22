@@ -1,0 +1,73 @@
+{
+  "bugdb": "",
+  "jira": "",
+  "mcp-atlassian": {
+    "enabled": false,
+    "command": "docker",
+    "args": [
+      "run",
+      "--rm",
+      "-i",
+      "-e",
+      "JIRA_URL",
+      "-e",
+      "JIRA_PERSONAL_TOKEN",
+      "-e",
+      "JIRA_SSL_VERIFY",
+      "ghcr.io/sooperset/mcp-atlassian:latest"
+    ],
+    "env": {
+      "JIRA_URL": "https://jira.oci.oraclecorp.com/",
+      "JIRA_PERSONAL_TOKEN": "${JIRA_OCI_PERSONAL_TOKEN}",
+      "JIRA_SSL_VERIFY": "false",
+      "READ_ONLY_MODE": "true",
+      "MCP_VERBOSE": "true"
+    }
+  },
+  "mcp-atlassian-central": {
+    "enabled": false,
+    "command": "docker",
+    "args": [
+      "run",
+      "--rm",
+      "-i",
+      "-e",
+      "JIRA_URL",
+      "-e",
+      "JIRA_PERSONAL_TOKEN",
+      "-e",
+      "JIRA_SSL_VERIFY",
+      "ghcr.io/sooperset/mcp-atlassian:latest"
+    ],
+    "env": {
+      "JIRA_URL": "https://jira.oraclecorp.com/jira",
+      "JIRA_PERSONAL_TOKEN": "${JIRA_CENTRAL_PERSONAL_TOKEN}",
+      "JIRA_SSL_VERIFY": "false",
+      "READ_ONLY_MODE": "true",
+      "MCP_VERBOSE": "true"
+    }
+  },
+  "mcp-atlassian-gbujira": {
+    "enabled": true,
+    "command": "docker",
+    "args": [
+      "run",
+      "--rm",
+      "-i",
+      "-e",
+      "JIRA_URL",
+      "-e",
+      "JIRA_PERSONAL_TOKEN",
+      "-e",
+      "JIRA_SSL_VERIFY",
+      "ghcr.io/sooperset/mcp-atlassian:latest"
+    ],
+    "env": {
+      "JIRA_URL": "https://gbujira.oraclecorp.com/",
+      "JIRA_PERSONAL_TOKEN": "${GBUJIRA_PERSONAL_TOKEN}",
+      "JIRA_SSL_VERIFY": "false",
+      "READ_ONLY_MODE": "true",
+      "MCP_VERBOSE": "true"
+    }
+  }
+}

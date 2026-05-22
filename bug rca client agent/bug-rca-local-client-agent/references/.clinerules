@@ -1,0 +1,545 @@
+# 19_9_2 - Enterprise RCA Investigation Rules (High-Fidelity, 900K Budget)
+
+## OPERATING MODE
+
+This rule file is optimized for **JIRA Root Cause Analysis (RCA)**.
+
+Primary Objective:
+- Identify root cause with maximum possible accuracy.
+- Produce a **complete, production-ready fix** — not a minimal patch.
+- Document every affected file, every required change.
+- Use tokens aggressively where they improve confidence and fix completeness.
+- Stop only after a HIGH-confidence RCA with a full fix is written.
+
+Available context: **900,000 tokens**. Do not hoard. Spend freely where it matters.
+
+--------------------------------------------------
+TOKEN BUDGET TIERS
+--------------------------------------------------
+
+Assess available context at the START of each investigation.
+Choose the tier that fits and follow its limits.
+
+### TIER 1 – LEAN (quick/obvious bugs only)
+Use when: Simple, well-scoped JIRA. Single file. No log. Clear error.
+- Code: 8 greps, 6 reads, ≤200 lines/read
+- Logs: 3 greps, 2 reads, ≤120 lines/read
+- Call trace: max 4 hops
+- Total budget: ~1200 lines
+
+### TIER 2 – STANDARD (most bugs)
+Use when: Multi-file bug, log provided, moderate complexity, or TIER 1 ended LOW/MEDIUM confidence.
+- Code: 14 greps, 10 reads, ≤250 lines/read
+- Logs: 5 greps, 4 reads, ≤200 lines/read
+- Call trace: max 6 hops
+- Read related tests, config files, DB schema mappings
+- Cross-reference multiple log sections
+- Total budget: ~3000 lines
+
+### TIER 3 – DEEP (complex/multi-system bugs)
+Use when: Multi-subsystem, race condition, state corruption, or TIER 2 ended LOW/MEDIUM confidence.
+- Code: 20 greps, 16 reads, ≤350 lines/read
+- Logs: 8 greps, 6 reads, ≤250 lines/read
+- Call trace: max 9 hops
+- Read full method bodies, callers, callees, related helpers, config, tests
+- Compare multiple code paths or feature-flag branches
+- Read multiple log files if provided
+- Total budget: ~6000 lines
+
+### TIER 4 – EXHAUSTIVE (only for the hardest bugs)
+Use when: Root cause involves timing, concurrency, cross-service state, or TIER 3 ends LOW/MEDIUM.
+- Code: 30 greps, 24 reads, ≤500 lines/read
+- Logs: 12 greps, 10 reads, ≤350 lines/read
+- Call trace: unlimited hops (follow until you hit the origin)
+- Read entire subsystem entry points if needed
+- Build full data-flow and thread-sequence diagrams in your analysis
+- May read db schema, migration files, service config
+- Total budget: ~15000 lines (900K context supports this easily)
+
+### TIER UPGRADE RULES
+- Start at TIER 1 always.
+- Upgrade to TIER 2 if:
+  → Confidence is LOW/MEDIUM after TIER 1 budget spent
+  → Bug clearly spans multiple files/subsystems
+  → Log reveals async, multi-thread, or timing interaction
+  → User explicitly asks for deeper analysis
+- Upgrade to TIER 3 if:
+  → TIER 2 still yields LOW/MEDIUM confidence
+  → Root cause involves timing, concurrency, or state corruption
+  → Call chain crosses subsystem boundaries
+  → User explicitly requests thorough investigation
+- Upgrade to TIER 4 if:
+  → TIER 3 still yields LOW/MEDIUM confidence
+  → Race condition, deadlock, or cross-service state corruption suspected
+  → User explicitly requests exhaustive investigation
+- NEVER skip tiers. Start lean, upgrade with purpose.
+- After each tier: "Do I have enough for HIGH confidence RCA + complete fix?"
+  If YES → stop and document. If NO → upgrade.
+
+--------------------------------------------------
+ACCURACY ENHANCEMENT RULES
+--------------------------------------------------
+
+These rules apply at ALL tiers and are non-negotiable.
+
+### SECOND-PASS VALIDATION (mandatory before writing RCA)
+After identifying root cause:
+1. Re-read the JIRA description. Does your root cause fully explain
+   every symptom described? If not → keep investigating.
+2. Trace the fix forward: will your proposed change break any caller
+   or dependent? If yes → extend the fix to cover it.
+3. Check for similar patterns nearby (same method, sibling calls):
+   is this bug repeated elsewhere in the same file or subsystem?
+   If yes → include all instances in the fix.
+4. Verify your confidence rating is honest, not optimistic.
+
+### CONTRADICTION CHECK
+Before writing RCA, explicitly confirm:
+- Log evidence matches code evidence. If they contradict → investigate
+  the contradiction before concluding.
+- Stack trace class/method names match what you found in the code.
+  If not → you may be looking at the wrong file.
+- The bug you found can actually reproduce the user-reported symptom.
+  If the code path is guarded or unreachable → keep looking.
+
+### CALL CHAIN VERIFICATION
+- Never assume a method is called from where you expect.
+- Grep for ALL callers of the culprit method, not just the obvious one.
+- If multiple callers exist → determine which one is the failing path
+  (use log thread/timestamp if available).
+
+### FEATURE FLAG AWARENESS
+Before concluding root cause, always check:
+Is this code path gated by a conditional compile symbol or runtime flag?
+Check:
+- DEBUG_USE_TEST_ICARE_CLIENT
+- LOG_REQUEST_DATA_FOR_TEST
+- MD / MT
+- OldLicensing
+- SIMPHONY_CNE
+- WindowsCE
+If yes → the fix must handle both branches, not just the active one.
+
+--------------------------------------------------
+HARD RULES (all tiers)
+--------------------------------------------------
+
+### NEVER DO
+
+1. NEVER browse entire folders.
+2. NEVER recursively scan the repository root.
+3. NEVER read entire files unless TIER 4 and file is <500 lines.
+4. NEVER read XML/RDL/XSLT files whole — GREP ONLY always.
+5. NEVER guess file paths — GREP to discover them.
+6. NEVER continue exploring after writing RCA.
+7. NEVER read log files whole — always size-check first.
+8. NEVER read memory-bank files other than:
+   - projectbrief.md
+   - systemPatterns.md
+   - techContext.md
+   - activeContext.md
+   - progress.md
+9. NEVER write a partial or placeholder fix ("implement logic here").
+   Every fix must be production-ready, complete, and compilable.
+10. NEVER write a fix that only addresses the reported case if the same
+    bug clearly exists in adjacent code paths — fix all instances.
+
+### ALWAYS DO
+
+1. GREP first (scoped to specific subdirectory).
+2. Use file-only search mode first, then targeted line reads.
+3. Prefer deeper reads on fewer high-signal files.
+4. Track budget mentally: greps used / reads used / lines consumed / tier.
+5. If grep returns 0 results → widen to parent folder only (once).
+6. Stop exploring only when you can write HIGH-confidence RCA + full fix.
+7. When writing a fix: read the FULL method containing the bug before
+   writing the replacement — never patch blind.
+8. If fix touches a public API or interface → check all implementors.
+9. Always verify the proposed fix compiles logically (trace types,
+   null paths, return values).
+
+--------------------------------------------------
+DANGER FILE POLICY (CRITICAL)
+--------------------------------------------------
+
+### General Rule
+If file >200 KB → GREP ONLY (all tiers, no exceptions).
+
+### Pattern Rules
+- */Generated/*.cs → GREP ONLY
+- Any .rdl file → GREP ONLY
+- Any .xslt file → GREP ONLY
+
+### XML Files (>1 MB) — GREP ONLY
+- EMCText_*.xml
+- EMCFeatureSetMap.xml
+- EMCText.xml
+- DbUpgrade.xml
+- SimphonyDbSchema.xml
+- OpsText_*.xml
+- EMCCommands.xml
+- PosCommonClasses.xml
+
+### Large .cs Files (>200 KB) — GREP ONLY
+- DbUpgrade/CustomActions.cs
+- OpsProcessor.cs
+- OpsRequest.cs
+- CheckSharing.cs
+- JournalFormatter.cs
+- DataStoreConst.cs
+- TSOPS.cs
+- FormMain.cs
+- DPSDailyTotals.cs
+- DPSCheckWriter.cs
+- TotalPostingHandler.cs
+
+If unsure about file size:
+→ Check with wc -c or similar.
+→ If >200KB → GREP ONLY, no exceptions.
+→ If ≤200KB → read targeted sections per tier budget.
+
+--------------------------------------------------
+LOG FILE POLICY
+--------------------------------------------------
+
+Log files (.log, .txt, .csv) are often 10K+ lines.
+NEVER read an entire log file.
+
+### Step 1: Size check (always)
+- Run: wc -l <logfile>
+- If >500 lines → GREP first to locate sections, then read around matches.
+- If ≤500 lines → may read in larger chunks within tier budget.
+
+### Step 2: Extract signals (grep priority order)
+1. Exact error message / exception text from JIRA
+2. "Exception", "Error", "FATAL", "FAIL", "Timeout", "NullReference"
+3. Stack trace class/method names from JIRA description
+4. Timestamp window if JIRA mentions when it occurred
+5. Thread ID / correlation ID if concurrency is suspected
+
+Use case-insensitive grep. File-only mode first to confirm matches exist.
+
+### Step 3: Read context around matches (scaled by tier)
+- TIER 1: ±40 lines around best 2 matches
+- TIER 2: ±70 lines around best 3 matches, may read multiple clusters
+- TIER 3: ±100 lines around best 4 matches, correlate across sections
+- TIER 4: ±150 lines, correlate all error clusters, build full timeline
+- Focus: timestamp, thread ID, exception type, full stack trace,
+  and the 10–15 lines BEFORE the error (the failing operation context).
+
+### Step 4: Correlate (TIER 2+)
+- Multiple errors → identify FIRST occurrence (root) vs cascading failures.
+- Timestamps available → build a timeline of events leading to failure.
+- Thread IDs available → isolate the failing thread's full sequence.
+- TIER 3+: cross-correlate multiple log files if provided.
+- TIER 4: build a full event sequence diagram across threads/services.
+
+### Step 5: Extract for RCA output (scaled by tier)
+- TIER 1: ≤15 critical lines, top 4 stack frames
+- TIER 2: ≤30 critical lines, top 6 frames, timeline if available
+- TIER 3: ≤50 critical lines, full relevant stack, timeline + thread correlation
+- TIER 4: ≤80 critical lines, full multi-thread/multi-service correlation
+
+Always preserve timestamps and thread IDs verbatim.
+
+### If log greps return too many matches:
+- >20 matches → narrow by timestamp or thread ID
+- >50 matches → narrow by TWO filters (timestamp + exception type)
+- Still too many → pick FIRST and LAST occurrence, explain the pattern
+
+--------------------------------------------------
+JIRA KEYWORD → TARGET PATH MAP
+--------------------------------------------------
+
+- POS API, Check, Transaction → TransactionService/
+- Discount, CheckDetail → PosTransaction/
+- OPS UI → OPS/OpsUI/
+- Report issues → OPS/Ops/Operations/Reports/
+- DB Timeout → DAO/Repository files in subsystem
+- Translation issues → .xslt + .rdl files
+- Service Host → ServiceHost/
+
+Always search in the mapped subsystem path first.
+TIER 2+: search adjacent subsystems if call chain leads there.
+TIER 3+: may search across all subsystems if root cause is shared infrastructure.
+
+--------------------------------------------------
+INVESTIGATION WORKFLOW
+--------------------------------------------------
+
+### PHASE 1: CLASSIFY (0 reads, 0 greps)
+
+- Read JIRA title and description fully.
+- Extract:
+  - Exact UI label or field name
+  - Error message (verbatim)
+  - Method names (if mentioned)
+  - When it occurs (workflow steps)
+  - Environment/version info if present
+- Select ONE subsystem from keyword map.
+- Check Known Bug Pattern Shortcuts (below).
+- Note any log file provided for Phase 1.5.
+- Assess complexity → pick starting tier (usually TIER 1).
+- If JIRA mentions concurrency, timing, intermittent failure → start at TIER 3.
+
+If known pattern matches → use shortcut, but still validate evidence.
+
+--------------------------------------------------
+
+### PHASE 1.5: LOG TRIAGE (only if log file provided)
+
+- Size check the log file (wc -l).
+- Grep for error/exception text from JIRA within tier budget.
+- Read around best matches within tier read/line budget.
+- Extract: exception type, full stack trace, class/method names.
+- TIER 2+: build timeline, identify root vs cascading errors,
+  correlate thread IDs.
+- TIER 3+: cross-file correlation if multiple logs provided.
+- Use extracted class/method names to sharpen Phase 2 search.
+- Reassess tier: does the log reveal more complexity than expected?
+  → If yes, upgrade tier before proceeding to Phase 2.
+
+--------------------------------------------------
+
+### PHASE 2: SEARCH (within tier grep budget)
+
+- Grep for exact keyword in target subsystem path.
+- If log provided → use log stack trace method/class as primary keyword.
+- File-only mode first. If 0 results → widen to parent folder.
+- Do NOT guess paths.
+- TIER 2+: search multiple keywords, related files, test files, constants.
+- TIER 3+: search across subsystems, check interface definitions,
+  abstract base classes, and all implementors.
+- TIER 4: exhaustive search — grep for all references, all callers,
+  all usages of relevant types/constants/config keys.
+
+--------------------------------------------------
+
+### PHASE 3: INSPECT (within tier read budget)
+
+- Read around top grep matches within tier line budget.
+- Trace call chain to tier depth.
+- ALWAYS read the full method body of the culprit before writing the fix.
+- TIER 2+: read full method bodies, related helpers, config values,
+  test assertions, interface contracts.
+- TIER 3+: read callers and callees at multiple hops, compare feature
+  flag branches, read DB mappings if relevant.
+- TIER 4: read entire subsystem entry points, all callers of culprit,
+  all implementations of affected interfaces.
+
+--------------------------------------------------
+
+### PHASE 4: ROOT CAUSE + CONFIDENCE CHECK
+
+Determine:
+- What the code currently does (exact behavior)
+- What it should do (expected behavior)
+- Why the bug occurs (exact logic error, missing guard, wrong condition, etc.)
+- What the complete fix requires (all files, all methods to change)
+
+Assign confidence: HIGH / MEDIUM / LOW.
+
+Run SECOND-PASS VALIDATION and CONTRADICTION CHECK before proceeding.
+
+If confidence < HIGH and next tier available:
+→ Upgrade tier. Loop back to Phase 2 or 3.
+
+If TIER 4 complete with LOW confidence:
+→ Document what was found, what is still unknown, and what additional
+  information (more logs, DB data, live repro) is required to confirm.
+
+--------------------------------------------------
+
+### PHASE 5: DOCUMENT AND STOP
+
+Output EXACTLY in this format:
+
+---
+
+## RCA: JIRA-XXXXX
+
+**Subsystem**: [name]
+**Investigation Tier**: [1/2/3/4 — and reason if upgraded from TIER 1]
+
+---
+
+**Culprit**:
+`Path/To/File.cs` → `MethodName()` at line [N]
+One sentence: what this code does wrong and why the symptom results.
+
+---
+
+**Call Chain**:
+```
+EntryPoint() → CallerMethod() → HelperMethod() → CulpritMethod():lineN
+```
+Include all hops. If multiple paths lead to the culprit, list all.
+
+---
+
+**Root Cause Code** (verbatim buggy code — full method or relevant block):
+```csharp
+// file: Path/To/File.cs  (lines N–M)
+<paste the actual buggy code section — complete enough to understand
+ the full context of the error, not just the one bad line>
+```
+
+---
+
+**Log Evidence** (if log file provided):
+```
+[timestamp] [threadId] [level] — exception/error line
+[timestamp] [threadId] [level] — stack frame 1
+[timestamp] [threadId] [level] — stack frame 2
+...
+[timestamp] [threadId] [level] — first occurrence vs last occurrence
+[optional: event timeline across threads]
+```
+
+---
+
+**Why It Fails**:
+Full explanation. Cover:
+- What the code does wrong (specific logic)
+- What condition triggers the failure
+- Why the wrong behavior produces the reported symptom
+- Any contributing factors (config, race condition, data dependency)
+- Whether this can fail silently or only under specific conditions
+Minimum 3 sentences. TIER 3/4: 5–10 sentences with full causal chain.
+
+---
+
+**Complete Fix**:
+
+> Fix every affected location. Do NOT leave any broken code path unaddressed.
+> Read the full method before writing its replacement.
+> The fix must be production-ready and compilable.
+> If the fix touches a public API or interface → show changes to all implementors.
+> If the same bug exists in sibling methods → fix them all here.
+
+**File 1: `Path/To/File.cs`**
+```csharp
+// BEFORE — lines N–M
+<complete original method or block, verbatim>
+
+// AFTER — complete replacement
+<complete corrected method or block>
+```
+
+**File 2: `Path/To/AnotherFile.cs`** (if applicable)
+```csharp
+// BEFORE
+<original>
+
+// AFTER
+<corrected>
+```
+
+*(Repeat for every file that requires a change)*
+
+---
+
+**Fix Explanation**:
+- What each change does and why
+- What edge cases the fix handles that the original did not
+- Any behavioral side effects (intentional or worth monitoring)
+- Risk level: LOW / MEDIUM / HIGH, and why
+- If HIGH risk → suggest what regression tests to run or write
+Minimum 3 sentences. TIER 3/4: full rationale with risk assessment.
+
+---
+
+**All Affected Files**:
+```
+Path/To/File1.cs  — lines N–M  (reason)
+Path/To/File2.cs  — lines N–M  (reason)
+...
+```
+
+---
+
+**Confidence**: HIGH / MEDIUM / LOW
+
+**Remaining Uncertainty** (if not HIGH):
+- What is still unknown
+- What additional data (log, repro steps, DB query, config dump) would confirm
+
+---
+
+STOP. Do NOT continue exploring after this output.
+
+--------------------------------------------------
+KNOWN BUG PATTERN SHORTCUTS
+--------------------------------------------------
+
+### Translation / i18n
+- Grep English string in .xslt
+- Compare with .rdl TT[Key]
+- Common cause: Hardcoded string or missing key mapping
+- Fix: Add key to all relevant .xslt files, verify .rdl binding
+
+### POS API / Check Reconstruction
+- Search TransactionService/SimphonyPosApi
+- Trace ConvertCGwCheckToGuestCheck
+- Check property restoration logic
+- Fix must handle all properties restored in that method, not just the reported one
+
+### Cover / Guest Count
+- Start in PosCore.Check.Operations
+- Search PostToCovers
+- Verify idempotency guard
+- Fix must handle re-entry, null check, and boundary conditions
+
+### DB / NHibernate
+- Search DAO
+- Check for missing DisconnectSession in finally block
+- Fix must add finally block — never rely on catch-only cleanup
+
+### Report Bugs
+- Search OPS/Ops/Operations/Reports/Definitions/
+- Then Styles/ for 40-col output
+- Grep .rdl GREP ONLY — never read whole file
+
+### OPS UI
+- Search OPS/OpsUI/Default/PageTemplates/
+- Then corresponding operation in OPS/Ops/Operations/
+- Fix must cover both the template and the backing operation if state is shared
+
+--------------------------------------------------
+INVESTIGATION BUDGET SUMMARY (BY TIER)
+--------------------------------------------------
+
+TIER 1 (Lean):
+- 8 code greps + 3 log greps = 11 total
+- 6 code reads (≤200 lines) + 2 log reads (≤120 lines) = 8 total
+- ~1200 lines max
+
+TIER 2 (Standard):
+- 14 code greps + 5 log greps = 19 total
+- 10 code reads (≤250 lines) + 4 log reads (≤200 lines) = 14 total
+- ~3000 lines max
+
+TIER 3 (Deep):
+- 20 code greps + 8 log greps = 28 total
+- 16 code reads (≤350 lines) + 6 log reads (≤250 lines) = 22 total
+- ~6000 lines max
+
+TIER 4 (Exhaustive):
+- 30 code greps + 12 log greps = 42 total
+- 24 code reads (≤500 lines) + 10 log reads (≤350 lines) = 34 total
+- ~15000 lines max
+- 900K context window supports this fully
+
+Upgrade when confidence demands it. Never upgrade out of habit.
+Never stay lean when accuracy is at stake.
+
+--------------------------------------------------
+FINAL RULE
+--------------------------------------------------
+
+The goal is accuracy and a complete fix — not token savings.
+
+Start lean. Upgrade whenever confidence requires it.
+Find the root cause. Understand it fully.
+Fix every broken path. Write production-ready code.
+Document completely. Then STOP.

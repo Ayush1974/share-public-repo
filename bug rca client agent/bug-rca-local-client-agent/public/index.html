@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Oracle Restaurants Issue Investigation Workspace</title>
+    <link rel="icon" type="image/png" href="/assets/oracle-logo.png?v=20260427-2" />
+    <link rel="stylesheet" href="/styles.css?v=20260425-12" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <img
+            class="oracle-logo"
+            src="/assets/oracle-logo.png?v=20260425-6"
+            alt="Oracle"
+          />
+          <div class="brand-copy">
+            <h1>Oracle Restaurants Issue Investigation Workspace</h1>
+          </div>
+        </div>
+
+        <div class="topbar-actions">
+          <div id="authUserChip" class="user-chip" hidden>
+            <span class="user-chip-label">Signed in</span>
+            <strong id="authUserName"></strong>
+            <small id="authUserMeta"></small>
+          </div>
+          <a id="logoutLink" href="/auth/logout" class="ghost-button" hidden>Sign Out</a>
+          <span id="statusBadge" class="status-pill status-idle">Idle</span>
+          <button id="downloadContextButton" type="button" class="ghost-button" disabled>Download Context</button>
+        </div>
+      </header>
+
+      <nav id="viewNav" class="view-nav" aria-label="Oracle Restaurants bug RCA navigation">
+        <button type="button" class="view-tab active" data-view="home">
+          <span>Home</span>
+          <small>Start RCA, watch the live run, and steer the session from one screen.</small>
+        </button>
+        <button type="button" class="view-tab" data-view="rca">
+          <span>Root Cause Report</span>
+          <small>Review the structured report, evidence, subsystem findings, and final RCA output.</small>
+        </button>
+        <button type="button" class="view-tab" data-view="sessions">
+          <span>Session History</span>
+          <small>Review saved investigations and chat history without reusing them as RCA input.</small>
+        </button>
+      </nav>
+
+      <main class="page-stack">
+        <section class="page-view active" data-view-panel="home">
+          <div class="home-shell">
+            <div class="home-primary">
+              <section class="panel launch-panel">
+                <div class="panel-head">
+                  <div>
+                    <p class="panel-kicker">Run Console</p>
+                    <h3>Start an RCA run</h3>
+                    <p class="panel-subcopy">Choose the Oracle Restaurants product, point to the correct source tree, and anchor the run to one bug or Jira item.</p>
+                  </div>
+                </div>
+
+                <section id="agentPanel" class="agent-panel" hidden aria-hidden="true">
+                  <button id="connectAgentButton" type="button" class="ghost-button" hidden>Retry Agent</button>
+                  <p id="agentConnectionHint" class="agent-connection-hint" hidden></p>
+                  <details id="agentAdvancedPanel" class="agent-advanced" hidden>
+                    <summary>Advanced agent settings</summary>
+                    <div class="agent-advanced-body">
+                      <label class="field">
+                        <span>Agent Base URL</span>
+                        <input id="agentBaseUrl" name="agentBaseUrl" placeholder="http://127.0.0.1:3210" />
+                      </label>
+                      <p class="agent-advanced-copy">Use this only when the local agent is running on a different address or port.</p>
+                    </div>
+                  </details>
+                </section>
+
+                <section id="runtimeBlocker" class="runtime-blocker" hidden>
+                  <div class="runtime-blocker-copy">
+                    <p class="panel-kicker">Runtime Gate</p>
+                    <h4 id="runtimeBlockerTitle">Elevated launch required</h4>
+                    <p id="runtimeBlockerDetail">
+                      Restart this console with the platform launcher in elevated mode before running RCA or fix actions.
+                    </p>
+                    <p id="runtimeBlockerHint" class="runtime-blocker-hint">
+                      You can still browse the source tree, adjust inputs, and review saved sessions before relaunching.
+                    </p>
+                  </div>
+                </section>
+
+                <form id="runForm" class="launch-form">
+                  <section class="step-block step-block-featured">
+                    <div class="step-block-head">
+                      <div>
+                        <p class="step-label">1. Source Code Select For Products</p>
+                      <p class="step-copy">Pick the product first, then use Browse Workspace for a local folder on this machine. You can also paste a direct UNC path when needed. If you want a hosted <code>shared://...</code> workspace, type it manually instead of browsing.</p>
+                      </div>
+                      <div class="panel-tools">
+                        <button id="browseWorkspaceButton" type="button" class="ghost-button" title="Opens a folder picker on this user machine for local folders. Type shared://... manually if you intentionally want the hosted VM workspace instead.">Browse Workspace</button>
+                      </div>
+                    </div>
+
+                    <div class="field-grid-single">
+                      <label class="field">
+                        <span>Product</span>
+                        <input
+                          id="productInput"
+                          name="productLabel"
+                          list="productOptions"
+                          placeholder="Search or type any Oracle Restaurants product"
+                          autocomplete="off"
+                        />
+                        <datalist id="productOptions"></datalist>
+                      </label>
+                      <label class="field">
+                        <span>Workspace</span>
+                        <input id="workspace" name="workspace" placeholder="C:\code\simphony or \\BURVM08103\simphony\temp" />
+                        <p class="field-note">Browse Workspace opens the local client-agent folder picker on the user machine. Use this page for a local folder or a direct UNC path such as <code>\\BURVM08103\simphony\temp</code>. If you intentionally want a hosted workspace such as <code>shared://simphony</code>, type it manually instead of browsing.</p>
+                      </label>
+                    </div>
+                  </section>
+
+                  <section class="step-block">
+                    <p class="step-label">2. Jira Ticket ID / BugDB ID</p>
+                    <div class="field-grid-two">
+                      <label class="field">
+                        <span>Ticket</span>
+                        <input id="ticketId" name="ticketId" placeholder="e.g. FPS-135835 or BUG-37214529" />
+                      </label>
+                      <label class="field">
+                        <span>Issue Title</span>
+                        <input id="issueTitle" name="issueTitle" placeholder="Actual Jira or bug title for the saved session name" />
+                      </label>
+                    </div>
+                    <label class="field">
+                      <span>Product Version</span>
+                      <input id="versionInput" name="version" placeholder="e.g. 19.8.5, 20.x, current branch" />
+                    </label>
+                  </section>
+
+                  <section class="step-block">
+                    <p class="step-label">RCA Guidance</p>
+                    <p class="step-copy">Choose the RCA style you want for this run, then adjust the guidance text directly if you need to narrow the evidence or product focus. Fix from RCA is intended for a writable local folder or UNC workspace.</p>
+                    <div class="chip-group">
+                      <button
+                        type="button"
+                        class="template-chip"
+                        data-guidance-mode="evidence-first"
+                        data-template="Focus on comments, audit history, attachments, logs, and reproducible evidence before concluding RCA."
+                      >
+                        Evidence-first
+                      </button>
+                      <button
+                        type="button"
+                        class="template-chip"
+                        data-guidance-mode="product-generic"
+                        data-template="Keep the RCA generic to the selected Oracle Restaurants product and highlight subsystem-specific evidence."
+                      >
+                        Product-generic RCA
+                      </button>
+                      <button
+                        type="button"
+                        class="template-chip"
+                        data-guidance-mode="fix-from-rca"
+                        data-template="If the RCA identifies concrete files, make the follow-up fix step update those exact files and report verification."
+                      >
+                        Fix from RCA
+                      </button>
+                    </div>
+                    <label class="field">
+                      <span>Current RCA guidance</span>
+                      <textarea
+                        id="extraInstructions"
+                        name="extraInstructions"
+                        rows="5"
+                        placeholder="Write the RCA guidance you want this run to follow."
+                      ></textarea>
+                    </label>
+                    <div class="guidance-state">
+                      <span class="guidance-label">Guidance preview</span>
+                      <p id="guidanceSummary" class="guidance-copy">No extra RCA guidance is applied yet.</p>
+                    </div>
+                  </section>
+
+                  <input id="model" name="model" type="hidden" />
+
+                  <div class="action-row">
+                    <button id="runButton" type="submit" class="primary-button">Start</button>
+                    <button id="stopButton" type="button" class="secondary-button" disabled>Stop</button>
+                  </div>
+                </form>
+              </section>
+
+              <section class="panel summary-panel">
+                <div class="panel-head">
+                  <div>
+                    <p class="panel-kicker">Current Investigation</p>
+                    <h3>Session summary</h3>
+                    <p class="panel-subcopy">Keep the active run context visible while you inspect live output or steer the next step.</p>
+                  </div>
+                </div>
+                <div class="context-block">
+                  <div class="overview-list">
+                    <div>
+                      <span>Session name</span>
+                      <strong id="sessionNameSummary">Not started</strong>
+                    </div>
+                    <div>
+                      <span>Session ID</span>
+                      <strong id="currentSessionId">Not started</strong>
+                    </div>
+                    <div>
+                      <span>Product</span>
+                      <strong id="productSummary">Not selected</strong>
+                    </div>
+                    <div>
+                      <span>Workspace root</span>
+                      <strong id="workspaceSummary">Not loaded</strong>
+                    </div>
+                    <div>
+                      <span>Ticket ID</span>
+                      <strong id="ticketSummary">Not provided</strong>
+                    </div>
+                    <div>
+                      <span>Product version</span>
+                      <strong id="versionSummary">Not provided</strong>
+                    </div>
+                    <div>
+                      <span>Final state</span>
+                      <strong id="finalState">No final report yet</strong>
+                    </div>
+                  </div>
+                  <p id="defaultPrompt" class="context-copy context-copy-muted" hidden></p>
+                </div>
+              </section>
+            </div>
+
+            <section class="panel live-home-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="panel-kicker">3. Live RCA Stream</p>
+                  <h3>Investigation stream</h3>
+                  <p class="panel-subcopy">Each card explains the local command or lookup, why it ran, and the brief result that came back.</p>
+                </div>
+                <div class="panel-tools">
+                  <span class="micro-stat">Events <strong id="eventCount">0</strong></span>
+                  <span class="micro-stat">Elapsed <strong id="elapsedTime">00:00</strong></span>
+                  <span class="micro-stat">Last update <strong id="lastUpdated">-</strong></span>
+                  <label class="toggle">
+                    <input id="autoScrollToggle" type="checkbox" checked />
+                    <span>Auto-scroll</span>
+                  </label>
+                  <button id="liveStopButton" type="button" class="secondary-button" disabled>Stop Run</button>
+                  <button id="clearStreamButton" type="button" class="ghost-button">Clear View</button>
+                  <button id="steerToggleButton" type="button" class="steer-toggle-button" aria-controls="steerPanel" aria-expanded="false">
+                    Steer Input Off
+                  </button>
+                </div>
+              </div>
+
+              <div class="live-layout">
+                <div class="live-stream-stack">
+                  <div class="console-window">
+                    <div class="console-topbar">
+                      <span class="dot dot-red"></span>
+                      <span class="dot dot-amber"></span>
+                      <span class="dot dot-green"></span>
+                      <p id="commandPreview">Codex stream idle</p>
+                    </div>
+                    <div id="liveOutput" class="terminal" aria-live="polite"></div>
+                  </div>
+
+                  <div id="steerPanel" class="steer-shell steer-shell-inline" hidden>
+                    <div class="steer-copy">
+                      <p class="step-label">Interactive Operator Input</p>
+                      <p class="interaction-hint">Use one short prompt to refine the next fresh RCA run. Saved sessions stay visible in history but are not reused as RCA input.</p>
+                    </div>
+                    <div class="steer-row">
+                      <input
+                        id="interactionInput"
+                        class="steer-input"
+                        placeholder="Ask for deeper evidence, product-generic RCA, or a focused fix step."
+                      />
+                      <button id="continueInteractionButton" type="button" class="primary-button">Run Fresh RCA</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="live-side-column">
+                  <div class="home-rca-panel">
+                    <div class="section-header">
+                      <div>
+                        <p id="homeReportLabel" class="context-label">Completed Report</p>
+                        <h4 id="homeReportHeading">Single report preview</h4>
+                      </div>
+                    </div>
+                    <div id="homeDeepRca" class="home-rca-preview">
+                      <div class="report-empty">
+                        <h4>No report preview yet</h4>
+                        <p>Complete an RCA run to show the current report preview here on Home.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="page-view" data-view-panel="rca">
+          <section class="panel report-panel">
+            <div class="panel-head">
+              <div>
+                <p class="panel-kicker">Root Cause Report</p>
+                <h3 id="reportTitle">Completed report</h3>
+                <p id="reportSubcopy" class="panel-subcopy">Review the current report with evidence, subsystem findings, affected files, and the final RCA output called out clearly.</p>
+              </div>
+              <div class="panel-tools">
+                <span class="micro-stat">Active block <strong id="activeSectionLabel">Report</strong></span>
+              </div>
+            </div>
+
+            <div id="reportNav" class="report-nav report-nav-hidden" hidden></div>
+
+            <div class="report-stage">
+              <article class="report-overview">
+                <div class="report-summary-card">
+                  <span>Confidence</span>
+                  <strong id="summaryConfidence">-</strong>
+                  <p>Confidence level parsed from the RCA block.</p>
+                </div>
+                <div class="report-summary-card">
+                  <span>Subsystem</span>
+                  <strong id="summarySubsystem">-</strong>
+                  <p>Primary subsystem connected to the issue.</p>
+                </div>
+                <div class="report-summary-card">
+                  <span>Affected files</span>
+                  <strong id="summaryAffectedFiles">0</strong>
+                  <p>Files counted from the RCA field output.</p>
+                </div>
+                <div class="report-summary-card">
+                  <span>Run discipline</span>
+                  <strong id="summaryVerification">Pending</strong>
+                  <p>Shows whether the run stayed RCA-only or included verification.</p>
+                </div>
+                <div class="report-summary-card">
+                  <span>Parsed sections</span>
+                  <strong id="reportSectionSummary">0</strong>
+                  <p>Structured sections detected in the final report.</p>
+                </div>
+                <div class="report-summary-card">
+                  <span>RCA fields</span>
+                  <strong id="rcaFieldSummary">0</strong>
+                  <p>Named findings available in the deep RCA block.</p>
+                </div>
+              </article>
+
+              <div class="summary-preview-card">
+                <p class="context-label">Key preview</p>
+                <p id="summaryPreview" class="context-copy">No investigation selected.</p>
+                <span id="mcpCallSummary" hidden>0</span>
+              </div>
+
+              <article id="reportBody" class="report-body">
+                <div class="report-empty">
+                  <h4>No final output yet</h4>
+                  <p>The structured report will populate after the RCA run finishes.</p>
+                </div>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <section class="page-view" data-view-panel="sessions">
+          <section class="panel history-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="panel-kicker">Session History</p>
+                  <h3>Saved investigations</h3>
+                  <p class="panel-subcopy">Open any earlier RCA or fix session to review its output and chat history. New RCA runs always start fresh from the current form values.</p>
+                </div>
+              <div class="panel-tools">
+                <span class="micro-stat">Saved sessions <strong id="savedSessionsCount">0</strong></span>
+                <button id="deleteAllSessionsButton" type="button" class="secondary-button">Delete All Sessions</button>
+                <button id="refreshSessionsButton" type="button" class="ghost-button">Refresh</button>
+              </div>
+            </div>
+            <div id="sessionList" class="session-list">
+              <article class="session-item empty">
+                <strong>No saved sessions yet</strong>
+                <p>Completed RCA sessions and any separate local fix sessions will appear here automatically.</p>
+              </article>
+            </div>
+          </section>
+        </section>
+
+      </main>
+    </div>
+
+    <div id="confirmDialog" class="confirm-dialog" hidden aria-hidden="true">
+      <div
+        id="confirmDialogBackdrop"
+        class="confirm-dialog-backdrop"
+        onclick="window.__bugRcaResolveConfirmDialog && window.__bugRcaResolveConfirmDialog(false)"
+      ></div>
+      <div class="confirm-dialog-panel" role="dialog" aria-modal="true" aria-labelledby="confirmDialogTitle" aria-describedby="confirmDialogMessage">
+        <div class="confirm-dialog-copy">
+          <p id="confirmDialogEyebrow" class="context-label">Confirm Action</p>
+          <h3 id="confirmDialogTitle">Confirm</h3>
+          <p id="confirmDialogMessage" class="panel-subcopy">Please confirm this action.</p>
+        </div>
+        <div class="confirm-dialog-actions">
+          <button
+            id="confirmDialogCancel"
+            type="button"
+            class="ghost-button"
+            onclick="window.__bugRcaResolveConfirmDialog && window.__bugRcaResolveConfirmDialog(false)"
+          >
+            Cancel
+          </button>
+          <button
+            id="confirmDialogConfirm"
+            type="button"
+            class="secondary-button"
+            onclick="window.__bugRcaResolveConfirmDialog && window.__bugRcaResolveConfirmDialog(true)"
+          >
+            Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

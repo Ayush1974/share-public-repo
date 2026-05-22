@@ -1,0 +1,30 @@
+{
+  "products": [
+    {
+      "key": "simphony",
+      "label": "Simphony",
+      "family": "Oracle Restaurants Simphony",
+      "defaultWorkspace": "C:\\Code\\simphony",
+      "usesSkill": true,
+      "skillName": "$simphony-bug-rca-pipeline"
+    },
+    {
+      "key": "rna",
+      "label": "R&A",
+      "family": "Oracle Restaurants Reporting and Analytics",
+      "defaultWorkspace": "C:\\Code\\rna"
+    },
+    {
+      "key": "flm",
+      "label": "FLM",
+      "family": "Oracle Restaurants Front Line Manager",
+      "defaultWorkspace": "C:\\Code\\flm"
+    },
+    {
+      "key": "cnc",
+      "label": "C&C",
+      "family": "Oracle Restaurants C&C",
+      "defaultWorkspace": "C:\\Code\\cnc"
+    }
+  ]
+}
