@@ -1,5 +1,6 @@
 const http = require("http");
 const https = require("https");
+const AdmZip = require("adm-zip");
 
 const { getConfiguredMcpServers, normalizeReportText } = require("./file-utils");
 const { isJiraMcpServer } = require("./ticket-routing");
@@ -9,16 +10,23 @@ const TEXT_ATTACHMENT_EXTENSIONS = new Set([
   ".json",
   ".log",
   ".md",
+  ".config",
+  ".cs",
+  ".html",
+  ".sql",
   ".txt",
   ".xml",
+  ".xaml",
   ".yaml",
   ".yml"
 ]);
 const MAX_ATTACHMENT_EXCERPT_DOWNLOADS = 5;
 const ATTACHMENT_EXCERPT_CONCURRENCY = 3;
 const MAX_ATTACHMENT_SIZE_BYTES = 256 * 1024;
+const MAX_ZIP_ATTACHMENT_SIZE_BYTES = 50 * 1024 * 1024;
 const MAX_TEXT_FIELD_LENGTH = 4000;
 const MAX_ATTACHMENT_EXCERPT_LENGTH = 4000;
+const MAX_ZIP_ATTACHMENT_EXCERPT_LENGTH = 30000;
 
 function normalizeBaseUrl(value) {
   return String(value || "").trim().replace(/\/+$/, "");
@@ -150,10 +158,52 @@ function requestUrl(url, { method = "GET", headers = {}, body = null, sslVerify 
   });
 }
 
+function formatJiraApiError(response, fallbackMessage) {
+  const statusCode = Number(response?.statusCode || 0);
+  const text = response?.body ? response.body.toString("utf8") : "";
+  let detail = "";
+
+  try {
+    const parsed = JSON.parse(text);
+    const parts = [];
+    if (Array.isArray(parsed?.errorMessages)) {
+      parts.push(...parsed.errorMessages);
+    }
+    if (parsed?.errors && typeof parsed.errors === "object") {
+      parts.push(...Object.values(parsed.errors));
+    }
+    if (parsed?.message) {
+      parts.push(parsed.message);
+    }
+    if (parsed?.error) {
+      parts.push(parsed.error);
+    }
+    detail = parts.map((value) => String(value || "").trim()).filter(Boolean).join(" ");
+  } catch (error) {
+    detail = truncateText(text, 800);
+  }
+
+  if (statusCode === 401) {
+    return "Jira authentication failed. The Jira token may be expired or invalid. Update the Jira personal access token and try again.";
+  }
+  if (statusCode === 403) {
+    return "Jira authorization failed. The Jira token does not have permission to access this issue.";
+  }
+  if (statusCode === 404) {
+    return "Jira issue was not found. Check the ticket key and confirm the Jira user can access it.";
+  }
+
+  return [
+    fallbackMessage,
+    statusCode ? `HTTP ${statusCode}.` : "",
+    detail
+  ].filter(Boolean).join(" ").trim();
+}
+
 function parseJsonResponse(response, fallbackMessage) {
   const text = response.body.toString("utf8");
   if (response.statusCode < 200 || response.statusCode >= 300) {
-    throw new Error(`${fallbackMessage} HTTP ${response.statusCode}: ${truncateText(text, 800)}`);
+    throw new Error(formatJiraApiError(response, fallbackMessage));
   }
 
   try {
@@ -288,6 +338,42 @@ async function fetchAttachmentExcerptsWithLimit(items, { concurrency = 1, maxSuc
   return excerpts;
 }
 
+function isZipAttachment(filename, mimeType) {
+  return String(filename || "").trim().toLowerCase().endsWith(".zip")
+    || String(mimeType || "").trim().toLowerCase().includes("zip");
+}
+
+function isTextLikeZipEntry(entryName) {
+  const normalized = String(entryName || "").trim().toLowerCase();
+  const extensionMatch = normalized.match(/\.[^.]+$/);
+  return TEXT_ATTACHMENT_EXTENSIONS.has(extensionMatch ? extensionMatch[0] : "");
+}
+
+function extractZipAttachmentExcerpt(zipBuffer, filename = "attachment.zip") {
+  const zip = new AdmZip(zipBuffer);
+  const sections = [];
+  let remaining = MAX_ZIP_ATTACHMENT_EXCERPT_LENGTH;
+
+  for (const entry of zip.getEntries()) {
+    const entryName = String(entry.entryName || "").replace(/\\/g, "/");
+    if (entry.isDirectory || !isTextLikeZipEntry(entryName) || remaining <= 0) {
+      continue;
+    }
+
+    const header = `--- ${filename} / ${entryName} ---`;
+    const body = truncateText(entry.getData().toString("utf8"), Math.max(0, remaining - header.length - 2));
+    if (!body) {
+      continue;
+    }
+
+    const section = `${header}\n${body}`;
+    sections.push(section);
+    remaining -= section.length + 2;
+  }
+
+  return truncateText(sections.join("\n\n"), MAX_ZIP_ATTACHMENT_EXCERPT_LENGTH);
+}
+
 async function maybeFetchAttachmentExcerpt(attachment, headers, sslVerify) {
   const filename = String(attachment?.filename || "").trim();
   const contentUrl = String(attachment?.content || "").trim();
@@ -299,8 +385,17 @@ async function maybeFetchAttachmentExcerpt(attachment, headers, sslVerify) {
     || mimeType.includes("json")
     || mimeType.includes("xml")
     || TEXT_ATTACHMENT_EXTENSIONS.has(extension);
+  const looksZipLike = isZipAttachment(filename, mimeType);
 
-  if (!contentUrl || !looksTextLike || !size || size > MAX_ATTACHMENT_SIZE_BYTES) {
+  if (!contentUrl || !size) {
+    return "";
+  }
+
+  if (looksZipLike && size > MAX_ZIP_ATTACHMENT_SIZE_BYTES) {
+    return "";
+  }
+
+  if (!looksZipLike && (!looksTextLike || size > MAX_ATTACHMENT_SIZE_BYTES)) {
     return "";
   }
 
@@ -312,6 +407,10 @@ async function maybeFetchAttachmentExcerpt(attachment, headers, sslVerify) {
 
   if (response.statusCode < 200 || response.statusCode >= 300) {
     return "";
+  }
+
+  if (looksZipLike) {
+    return extractZipAttachmentExcerpt(response.body, filename);
   }
 
   return truncateText(response.body.toString("utf8"), MAX_ATTACHMENT_EXCERPT_LENGTH);
@@ -399,8 +498,10 @@ async function fetchDirectJiraIssueEvidence(ticketId) {
 }
 
 module.exports = {
+  extractZipAttachmentExcerpt,
   fetchDirectJiraIssueEvidence,
   flattenJiraValue,
+  formatJiraApiError,
   resolveDirectJiraApiConfig,
   truncateText
 };

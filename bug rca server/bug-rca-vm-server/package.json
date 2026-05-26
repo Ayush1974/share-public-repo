@@ -14,5 +14,8 @@
     "jira:revoke:previous:gbu": "node ./scripts/revoke-jira-pat.js --target gbujira --revoke-previous",
     "install:server:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\install-server-startup.ps1",
     "remove:server:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\remove-server-startup.ps1"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16"
   }
 }

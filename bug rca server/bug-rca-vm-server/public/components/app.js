@@ -14,6 +14,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
     const PRODUCT_GENERIC_GUIDANCE = "Keep the RCA specific to the selected Jira/BugDB ticket, its exact symptom, and the selected Oracle Restaurants product. Do not drift into generic product guidance.";
     const DEFAULT_LOCAL_AGENT_BASE_URL = "http://127.0.0.1:3210";
     const LOCAL_AGENT_RECONNECT_MS = 3000;
+    const LOCAL_AGENT_DISCONNECTED_NOTICE = "Local client agent is not connected. Start the local client agent to use Developer mode.";
     const EMPTY_LOCAL_AGENT_STATUS = {
         connected: false,
         host: "",
@@ -113,21 +114,55 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
         const normalized = normalizeText(value).replace(/\s+/g, " ");
         return normalized.length > limit ? `${normalized.slice(0, limit - 1)}...` : normalized;
     }
+    function formatErrorMessage(value) {
+        const raw = value instanceof Error ? value.message : String(value || "");
+        const normalized = raw.trim();
+        if (!normalized) {
+            return "The request failed. Please try again.";
+        }
+        try {
+            const parsed = JSON.parse(normalized);
+            const jiraMessages = [
+                ...(Array.isArray(parsed.errorMessages) ? parsed.errorMessages : []),
+                ...(parsed.errors && typeof parsed.errors === "object" ? Object.values(parsed.errors) : [])
+            ].map((entry) => String(entry || "").trim()).filter(Boolean);
+            if (jiraMessages.some((message) => /issue does not exist|issue not found/i.test(message))) {
+                return "Jira issue was not found. Check the Jira number and confirm you have access to it.";
+            }
+            if (jiraMessages.length) {
+                return jiraMessages.join(" ");
+            }
+            const message = parsed.error || parsed.message || parsed.detail || parsed.errorMessage;
+            if (message) {
+                return formatErrorMessage(message);
+            }
+        }
+        catch (_a) {
+        }
+        const jsonStart = normalized.indexOf("{");
+        if (jsonStart > 0 && normalized.endsWith("}")) {
+            const prefix = normalized.slice(0, jsonStart).trimEnd();
+            const formatted = formatErrorMessage(normalized.slice(jsonStart));
+            if (formatted && formatted !== normalized.slice(jsonStart)) {
+                if (/HTTP\s+404/i.test(prefix) && /jira issue was not found|issue does not exist|issue not found/i.test(formatted)) {
+                    const issueMatch = prefix.match(/Jira issue\s+([A-Za-z0-9_-]+)/i);
+                    const issueLabel = (issueMatch === null || issueMatch === void 0 ? void 0 : issueMatch[1]) ? ` ${issueMatch[1]}` : "";
+                    return `Jira issue${issueLabel} was not found. Check the Jira number and confirm you have access to it.`;
+                }
+                return `${prefix} ${formatted}`.trim();
+            }
+        }
+        return normalized
+            .replace(/\s+/g, " ")
+            .replace(/^Error:\s*/i, "")
+            .trim();
+    }
     function fetchJson(url_1) {
         return __awaiter(this, arguments, void 0, function* (url, options = {}) {
             const response = yield fetch(url, Object.assign(Object.assign({}, options), { headers: Object.assign({ Accept: "application/json" }, (options.headers || {})) }));
             const body = yield response.text();
             if (!response.ok) {
-                try {
-                    const parsed = JSON.parse(body);
-                    throw new Error(parsed.error || parsed.message || body || `HTTP ${response.status}`);
-                }
-                catch (error) {
-                    if (error instanceof Error && error.message !== body) {
-                        throw error;
-                    }
-                    throw new Error(body || `HTTP ${response.status}`);
-                }
+                throw new Error(formatErrorMessage(body || `HTTP ${response.status}`));
             }
             return body ? JSON.parse(body) : {};
         });
@@ -900,17 +935,20 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
     }
     function renderLiveLine(text) {
         const displayText = collapseRepeatedLiveFileRefs(text);
-        const kind = /^RCA successful:/i.test(text)
-            ? "success"
-            : /^RCA failed:/i.test(text)
-                ? "error"
-                : /^RCA stopped:/i.test(text)
-                    ? "warning"
-                    : /^warning:|^stderr:/i.test(text)
+        const isLocalAgentWarning = text.includes(LOCAL_AGENT_DISCONNECTED_NOTICE);
+        const kind = isLocalAgentWarning
+            ? "warning local-agent-warning"
+            : /^RCA successful:/i.test(text)
+                ? "success"
+                : /^RCA failed:/i.test(text)
+                    ? "error"
+                    : /^RCA stopped:/i.test(text)
                         ? "warning"
-                        : isCommandLikeLine(text)
-                            ? "command"
-                            : "";
+                        : /^warning:|^stderr:/i.test(text)
+                            ? "warning"
+                            : isCommandLikeLine(text)
+                                ? "command"
+                                : "";
         return ((0, jsx_runtime_1.jsx)("p", { class: `live-output-line ${kind}`, children: renderInlineCode(displayText) }));
     }
     function shouldSuppressLiveLine(text) {
@@ -1067,10 +1105,10 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
         const [currentSessionId, setCurrentSessionId] = (0, hooks_1.useState)("");
         const [isLoadingConfig, setIsLoadingConfig] = (0, hooks_1.useState)(true);
         const [leftPanelCollapsed, setLeftPanelCollapsed] = (0, hooks_1.useState)(false);
-            const controllerRef = (0, hooks_1.useRef)(null);
-            const liveOutputRef = (0, hooks_1.useRef)(null);
-            const endNoticeShownRef = (0, hooks_1.useRef)(false);
-            const lastFailureDetailRef = (0, hooks_1.useRef)("");
+        const controllerRef = (0, hooks_1.useRef)(null);
+        const liveOutputRef = (0, hooks_1.useRef)(null);
+        const endNoticeShownRef = (0, hooks_1.useRef)(false);
+        const lastFailureDetailRef = (0, hooks_1.useRef)("");
         const products = (0, hooks_1.useMemo)(() => normalizeProducts(runtime.products || []), [runtime.products]);
         const selectedProductConfig = products.find((product) => product.key === selectedProduct) || products[0];
         const workspace = developerMode
@@ -1131,6 +1169,15 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                 loadLocalAgentStatus();
             }, LOCAL_AGENT_RECONNECT_MS);
             return () => window.clearInterval(timer);
+        }, [developerMode, localAgentStatus.connected]);
+        (0, hooks_1.useEffect)(() => {
+            setLiveOutput((lines) => {
+                const withoutNotice = lines.filter((line) => line !== LOCAL_AGENT_DISCONNECTED_NOTICE);
+                if (developerMode && !localAgentStatus.connected) {
+                    return [...withoutNotice, LOCAL_AGENT_DISCONNECTED_NOTICE].slice(-500);
+                }
+                return withoutNotice;
+            });
         }, [developerMode, localAgentStatus.connected]);
         (0, hooks_1.useEffect)(() => {
             if (liveOutputRef.current) {
@@ -1304,7 +1351,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
             if (shouldSuppressLiveLine(text)) {
                 return;
             }
-            setLiveOutput((lines) => [...lines, text].slice(-500));
+            setLiveOutput((lines) => [...lines, formatErrorMessage(text)].slice(-500));
         }
         function stopRun() {
             return __awaiter(this, void 0, void 0, function* () {
@@ -1332,7 +1379,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
             return __awaiter(this, void 0, void 0, function* () {
                 if (developerMode && !localAgentStatus.connected) {
                     yield loadLocalAgentStatus();
-                    appendLive("Browse failed: local client agent is not connected on your machine.");
+                    appendLive(`Browse failed: ${LOCAL_AGENT_DISCONNECTED_NOTICE}`);
                     return;
                 }
                 setIsBrowsingWorkspace(true);
@@ -1446,8 +1493,8 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                     }
                     setRunState("failed");
                     setStatusText("Failed");
-                    appendLive(`RCA failed: ${error.message}`);
-                    addChat("assistant", `The RCA run failed: ${compactText(error.message, 180)}`);
+                    appendLive(`RCA failed: ${formatErrorMessage(error)}`);
+                    addChat("assistant", `The RCA run failed: ${compactText(formatErrorMessage(error), 180)}`);
                 }
                 finally {
                     controllerRef.current = null;
@@ -1591,8 +1638,8 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                 }
             }
         }
-        return ((0, jsx_runtime_1.jsxs)("div", { class: "rca-app-shell", children: [(0, jsx_runtime_1.jsxs)("header", { class: "rca-topbar", children: [(0, jsx_runtime_1.jsxs)("div", { class: "rca-brand", children: [(0, jsx_runtime_1.jsx)("img", { src: "styles/images/oracle_logo.svg", alt: "Oracle" }), (0, jsx_runtime_1.jsxs)("div", { children: [(0, jsx_runtime_1.jsx)("h1", { children: appName }), (0, jsx_runtime_1.jsx)("p", { children: "Issue Investigation Tool" })] })] }), (0, jsx_runtime_1.jsxs)("div", { class: "rca-top-actions", children: [(0, jsx_runtime_1.jsxs)("div", { class: "status-chip user-chip", title: signedInLabel, children: [(0, jsx_runtime_1.jsx)("span", { children: "Signed in" }), (0, jsx_runtime_1.jsx)("strong", { children: signedInLabel })] }), (0, jsx_runtime_1.jsxs)("div", { class: `status-chip ${runtime.connected ? "is-ok" : "is-bad"}`, children: [(0, jsx_runtime_1.jsx)("span", { children: "Agent" }), (0, jsx_runtime_1.jsx)("strong", { children: isLoadingConfig ? "Checking" : runtime.connected ? "Connected" : "Offline" })] }), (0, jsx_runtime_1.jsxs)("a", { class: "status-chip signout-button", href: "/auth/logout", children: [(0, jsx_runtime_1.jsx)("span", { children: "Session" }), (0, jsx_runtime_1.jsx)("strong", { children: "Sign out" })] })] })] }), (0, jsx_runtime_1.jsxs)("main", { class: `rca-layout ${leftPanelCollapsed ? "left-collapsed" : ""}`, children: [leftPanelCollapsed ? ((0, jsx_runtime_1.jsx)("aside", { class: "collapsed-rail", "aria-label": "Open investigation panel", children: (0, jsx_runtime_1.jsxs)("button", { class: "rail-menu-button", type: "button", "aria-label": "Open investigation panel", title: "Open investigation panel", onClick: () => setLeftPanelCollapsed(false), children: [(0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {})] }) })) : null, (0, jsx_runtime_1.jsxs)("aside", { class: "control-panel", "aria-label": "Investigation controls and chat", "aria-hidden": leftPanelCollapsed ? "true" : "false", children: [(0, jsx_runtime_1.jsxs)("div", { class: "panel-command-bar", children: [(0, jsx_runtime_1.jsx)("div", { class: "panel-oracle-tile", "aria-label": "Oracle Restaurants RCA panel", children: (0, jsx_runtime_1.jsx)("span", { "aria-hidden": "true" }) }), (0, jsx_runtime_1.jsxs)("button", { class: "panel-collapse-button", type: "button", "aria-label": "Collapse investigation panel", title: "Collapse investigation panel", onClick: () => setLeftPanelCollapsed(true), children: [(0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {})] })] }), (0, jsx_runtime_1.jsxs)("section", { class: "control-card", children: [(0, jsx_runtime_1.jsxs)("div", { class: "section-heading", children: [(0, jsx_runtime_1.jsx)("span", { children: "Mode" }), (0, jsx_runtime_1.jsx)("strong", { children: "Source" })] }), (0, jsx_runtime_1.jsxs)("div", { class: "radio-row two-col", role: "radiogroup", "aria-label": "Developer mode", children: [(0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "developerMode", checked: !developerMode, onChange: () => setDeveloperMode(false) }), "Product"] }), (0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "developerMode", checked: developerMode, onChange: () => setDeveloperMode(true) }), "Developer"] })] }), !developerMode ? ((0, jsx_runtime_1.jsxs)("label", { class: "field-block", children: [(0, jsx_runtime_1.jsx)("span", { children: "Product name" }), (0, jsx_runtime_1.jsx)("select", { value: selectedProduct, onChange: (event) => setSelectedProduct(event.currentTarget.value), children: products.map((product) => ((0, jsx_runtime_1.jsx)("option", { value: product.key, children: product.label }))) })] })) : ((0, jsx_runtime_1.jsxs)("div", { class: "browse-workspace-block", children: [(0, jsx_runtime_1.jsx)("button", { class: "browse-button", type: "button", disabled: isBrowsingWorkspace || !localAgentStatus.connected, onClick: browseWorkspace, children: isBrowsingWorkspace ? "Opening..." : "Browse Code Folder" }), (0, jsx_runtime_1.jsx)("p", { class: `selected-path ${folderPath ? "" : "needs-attention"}`, children: folderPath || "No folder selected" })] })), developerMode ? ((0, jsx_runtime_1.jsx)("p", { class: `workspace-note ${workspace && localAgentStatus.connected ? "" : "needs-attention"}`, children: !localAgentStatus.connected
-                                                ? "Local client agent is not connected on your machine."
+        return ((0, jsx_runtime_1.jsxs)("div", { class: "rca-app-shell", children: [(0, jsx_runtime_1.jsxs)("header", { class: "rca-topbar", children: [(0, jsx_runtime_1.jsxs)("div", { class: "rca-brand", children: [(0, jsx_runtime_1.jsx)("img", { src: "styles/images/oracle_logo.svg", alt: "Oracle" }), (0, jsx_runtime_1.jsxs)("div", { children: [(0, jsx_runtime_1.jsx)("h1", { children: appName }), (0, jsx_runtime_1.jsx)("p", { children: "Issue Investigation Tool" })] })] }), (0, jsx_runtime_1.jsxs)("div", { class: "rca-top-actions", children: [(0, jsx_runtime_1.jsxs)("div", { class: "status-chip user-chip", title: signedInLabel, children: [(0, jsx_runtime_1.jsx)("span", { children: "Signed in" }), (0, jsx_runtime_1.jsx)("strong", { children: signedInLabel })] }), (0, jsx_runtime_1.jsxs)("div", { class: `status-chip ${runtime.connected ? "is-ok" : "is-bad"}`, children: [(0, jsx_runtime_1.jsx)("span", { children: "Server Agent" }), (0, jsx_runtime_1.jsx)("strong", { children: isLoadingConfig ? "Checking" : runtime.connected ? "Connected" : "Offline" })] }), (0, jsx_runtime_1.jsxs)("a", { class: "status-chip signout-button", href: "/auth/logout", children: [(0, jsx_runtime_1.jsx)("span", { children: "Session" }), (0, jsx_runtime_1.jsx)("strong", { children: "Sign out" })] })] })] }), (0, jsx_runtime_1.jsxs)("main", { class: `rca-layout ${leftPanelCollapsed ? "left-collapsed" : ""}`, children: [leftPanelCollapsed ? ((0, jsx_runtime_1.jsx)("aside", { class: "collapsed-rail", "aria-label": "Open investigation panel", children: (0, jsx_runtime_1.jsxs)("button", { class: "rail-menu-button", type: "button", "aria-label": "Open investigation panel", title: "Open investigation panel", onClick: () => setLeftPanelCollapsed(false), children: [(0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {})] }) })) : null, (0, jsx_runtime_1.jsxs)("aside", { class: "control-panel", "aria-label": "Investigation controls and chat", "aria-hidden": leftPanelCollapsed ? "true" : "false", children: [(0, jsx_runtime_1.jsxs)("div", { class: "panel-command-bar", children: [(0, jsx_runtime_1.jsx)("div", { class: "panel-oracle-tile", "aria-label": "Oracle Restaurants RCA panel", children: (0, jsx_runtime_1.jsx)("span", { "aria-hidden": "true" }) }), (0, jsx_runtime_1.jsxs)("button", { class: "panel-collapse-button", type: "button", "aria-label": "Collapse investigation panel", title: "Collapse investigation panel", onClick: () => setLeftPanelCollapsed(true), children: [(0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {})] })] }), (0, jsx_runtime_1.jsxs)("section", { class: "control-card", children: [(0, jsx_runtime_1.jsxs)("div", { class: "section-heading", children: [(0, jsx_runtime_1.jsx)("span", { children: "Mode" }), (0, jsx_runtime_1.jsx)("strong", { children: "Source" })] }), (0, jsx_runtime_1.jsxs)("div", { class: "radio-row two-col", role: "radiogroup", "aria-label": "Developer mode", children: [(0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "developerMode", checked: !developerMode, onChange: () => setDeveloperMode(false) }), "Product"] }), (0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "developerMode", checked: developerMode, onChange: () => setDeveloperMode(true) }), "Developer"] })] }), !developerMode ? ((0, jsx_runtime_1.jsxs)("label", { class: "field-block", children: [(0, jsx_runtime_1.jsx)("span", { children: "Product name" }), (0, jsx_runtime_1.jsx)("select", { value: selectedProduct, onChange: (event) => setSelectedProduct(event.currentTarget.value), children: products.map((product) => ((0, jsx_runtime_1.jsx)("option", { value: product.key, children: product.label }))) })] })) : ((0, jsx_runtime_1.jsxs)("div", { class: "browse-workspace-block", children: [(0, jsx_runtime_1.jsx)("button", { class: "browse-button", type: "button", disabled: isBrowsingWorkspace || !localAgentStatus.connected, onClick: browseWorkspace, children: isBrowsingWorkspace ? "Opening..." : "Browse Code Folder" }), (0, jsx_runtime_1.jsx)("p", { class: `selected-path ${folderPath ? "" : "needs-attention"}`, children: folderPath || "No folder selected" })] })), developerMode ? ((0, jsx_runtime_1.jsx)("p", { class: `workspace-note ${workspace && localAgentStatus.connected ? "" : "needs-attention"}`, children: !localAgentStatus.connected
+                                                ? LOCAL_AGENT_DISCONNECTED_NOTICE
                                                 : workspace
                                                     ? "Developer workspace ready on your machine."
                                                     : "Choose the local code folder before starting RCA." })) : null] }), (0, jsx_runtime_1.jsxs)("section", { class: "control-card", children: [(0, jsx_runtime_1.jsxs)("div", { class: "section-heading", children: [(0, jsx_runtime_1.jsx)("span", { children: "Ticket" }), (0, jsx_runtime_1.jsx)("strong", { children: "Bug Source" })] }), (0, jsx_runtime_1.jsxs)("div", { class: "radio-row", role: "radiogroup", "aria-label": "Ticket source", children: [(0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "ticketType", checked: ticketType === "jira", onChange: () => setTicketType("jira") }), "Jira Number"] }), (0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "ticketType", checked: ticketType === "description", onChange: () => setTicketType("description") }), "Problem Statement"] })] }), (0, jsx_runtime_1.jsxs)("label", { class: "field-block", children: [(0, jsx_runtime_1.jsx)("span", { children: ticketInputLabel }), isDescriptionTicket ? ((0, jsx_runtime_1.jsx)("textarea", { class: "bug-description-input", rows: 5, placeholder: "Problem Statement", value: bugDescription, onInput: (event) => setBugDescription(event.currentTarget.value) })) : ((0, jsx_runtime_1.jsx)("input", { value: ticketId, onInput: (event) => {

@@ -13,6 +13,7 @@ const PACKAGED_REFERENCES_ROOT = path.join(APP_ROOT, "references");
 const MAX_PROMPT_DESCRIPTION_LENGTH = 4000;
 const MAX_PROMPT_COMMENT_LENGTH = 1200;
 const MAX_PROMPT_ATTACHMENT_EXCERPT_LENGTH = 1200;
+const MAX_PROMPT_ZIP_ATTACHMENT_EXCERPT_LENGTH = 30000;
 const JIRA_HINT_FILE_PATTERN = /\b(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+\.(?:cs|csproj|config|cpp|cmd|bat|ps1|java|js|json|md|sql|ts|tsx|txt|xml|xaml|yaml|yml)\b/g;
 
 function slugifyProductKey(value, fallback = "product") {
@@ -210,6 +211,12 @@ function formatPromptList(title, values = []) {
   return `${title}: ${normalizedValues.join(", ")}`;
 }
 
+function isPromptZipAttachment(attachment) {
+  const filename = String(attachment?.filename || "").trim().toLowerCase();
+  const mimeType = String(attachment?.mimeType || "").trim().toLowerCase();
+  return filename.endsWith(".zip") || mimeType.includes("zip");
+}
+
 function formatJiraEvidenceForPrompt(jiraEvidence = null) {
   if (!jiraEvidence || typeof jiraEvidence !== "object") {
     return "";
@@ -263,7 +270,10 @@ function formatJiraEvidenceForPrompt(jiraEvidence = null) {
         Number(attachment?.size || 0) ? `${attachment.size} bytes` : ""
       ].filter(Boolean);
       lines.push(`- ${parts.join(" | ")}`);
-      const excerpt = truncatePromptText(attachment?.excerpt || "", MAX_PROMPT_ATTACHMENT_EXCERPT_LENGTH);
+      const excerptLimit = isPromptZipAttachment(attachment)
+        ? MAX_PROMPT_ZIP_ATTACHMENT_EXCERPT_LENGTH
+        : MAX_PROMPT_ATTACHMENT_EXCERPT_LENGTH;
+      const excerpt = truncatePromptText(attachment?.excerpt || "", excerptLimit);
       if (excerpt) {
         lines.push(excerpt);
       }

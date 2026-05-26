@@ -1,7 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const AdmZip = require("adm-zip");
 
 const { selectPreferredFinalMessage } = require("../lib/file-utils");
+const { extractZipAttachmentExcerpt, formatJiraApiError } = require("../lib/core/jira-api");
 const { parseNamedSections, parseRcaFields } = require("../lib/parsing");
 const { buildSessionPrompt, formatJiraEvidenceForPrompt, normalizeRequest } = require("../lib/prompts");
 const { evaluateRcaOutput } = require("../lib/rca-output");
@@ -146,6 +148,37 @@ test("formatJiraEvidenceForPrompt formats Jira fields comments and attachments",
   assert.match(formatted, /Ticket key: FPS-135835/);
   assert.match(formatted, /Comments:/);
   assert.match(formatted, /error\.log/);
+});
+
+test("Jira 401 JSON errors are converted to plain English", () => {
+  const message = formatJiraApiError({
+    statusCode: 401,
+    body: Buffer.from(JSON.stringify({
+      errorMessages: ["You are not authenticated."],
+      errors: {}
+    }))
+  }, "Failed to fetch Jira issue FPS-135835.");
+
+  assert.equal(
+    message,
+    "Jira authentication failed. The Jira token may be expired or invalid. Update the Jira personal access token and try again."
+  );
+  assert.doesNotMatch(message, /^\{/);
+});
+
+test("extractZipAttachmentExcerpt reads text files inside an in-memory zip attachment", () => {
+  const zip = new AdmZip();
+  zip.addFile("logs/error.log", Buffer.from("stack trace line", "utf8"));
+  zip.addFile("src/Foo.cs", Buffer.from("public class Foo {}", "utf8"));
+  zip.addFile("bin/image.png", Buffer.from([0, 1, 2, 3]));
+
+  const excerpt = extractZipAttachmentExcerpt(zip.toBuffer(), "evidence.zip");
+
+  assert.match(excerpt, /evidence\.zip \/ logs\/error\.log/);
+  assert.match(excerpt, /stack trace line/);
+  assert.match(excerpt, /evidence\.zip \/ src\/Foo\.cs/);
+  assert.match(excerpt, /public class Foo/);
+  assert.doesNotMatch(excerpt, /image\.png/);
 });
 
 test("resolveTicketScopedMcpServers requires Jira MCP for Jira and suppresses it for BugDB", () => {

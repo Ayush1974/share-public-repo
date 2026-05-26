@@ -81,6 +81,7 @@ type Props = Readonly<{
 const PRODUCT_GENERIC_GUIDANCE = "Keep the RCA specific to the selected Jira/BugDB ticket, its exact symptom, and the selected Oracle Restaurants product. Do not drift into generic product guidance.";
 const DEFAULT_LOCAL_AGENT_BASE_URL = "http://127.0.0.1:3210";
 const LOCAL_AGENT_RECONNECT_MS = 3000;
+const LOCAL_AGENT_DISCONNECTED_NOTICE = "Local client agent is not connected. Start the local client agent to use Developer mode.";
 const EMPTY_LOCAL_AGENT_STATUS: LocalAgentStatus = {
   connected: false,
   host: "",
@@ -186,6 +187,53 @@ function compactText(value: unknown, limit = 220) {
   return normalized.length > limit ? `${normalized.slice(0, limit - 1)}...` : normalized;
 }
 
+function formatErrorMessage(value: unknown): string {
+  const raw = value instanceof Error ? value.message : String(value || "");
+  const normalized = raw.trim();
+  if (!normalized) {
+    return "The request failed. Please try again.";
+  }
+
+  try {
+    const parsed = JSON.parse(normalized);
+    const jiraMessages = [
+      ...(Array.isArray(parsed.errorMessages) ? parsed.errorMessages : []),
+      ...(parsed.errors && typeof parsed.errors === "object" ? Object.values(parsed.errors) : [])
+    ].map((entry) => String(entry || "").trim()).filter(Boolean);
+    if (jiraMessages.some((message) => /issue does not exist|issue not found/i.test(message))) {
+      return "Jira issue was not found. Check the Jira number and confirm you have access to it.";
+    }
+    if (jiraMessages.length) {
+      return jiraMessages.join(" ");
+    }
+    const message = parsed.error || parsed.message || parsed.detail || parsed.errorMessage;
+    if (message) {
+      return formatErrorMessage(message);
+    }
+  } catch {
+    // The message is already plain text.
+  }
+
+  const jsonStart = normalized.indexOf("{");
+  if (jsonStart > 0 && normalized.endsWith("}")) {
+    const prefix = normalized.slice(0, jsonStart).trimEnd();
+    const formatted: string = formatErrorMessage(normalized.slice(jsonStart));
+    if (formatted && formatted !== normalized.slice(jsonStart)) {
+      if (/HTTP\s+404/i.test(prefix) && /jira issue was not found|issue does not exist|issue not found/i.test(formatted)) {
+        const issueMatch = prefix.match(/Jira issue\s+([A-Za-z0-9_-]+)/i);
+        const issueLabel = issueMatch?.[1] ? ` ${issueMatch[1]}` : "";
+        return `Jira issue${issueLabel} was not found. Check the Jira number and confirm you have access to it.`;
+      }
+      return `${prefix} ${formatted}`.trim();
+    }
+  }
+
+  return normalized
+    .replace(/\s+/g, " ")
+    .replace(/^Error:\s*/i, "")
+    .trim();
+}
+
 async function fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(url, {
     ...options,
@@ -196,15 +244,7 @@ async function fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> 
   });
   const body = await response.text();
   if (!response.ok) {
-    try {
-      const parsed = JSON.parse(body);
-      throw new Error(parsed.error || parsed.message || body || `HTTP ${response.status}`);
-    } catch (error) {
-      if (error instanceof Error && error.message !== body) {
-        throw error;
-      }
-      throw new Error(body || `HTTP ${response.status}`);
-    }
+    throw new Error(formatErrorMessage(body || `HTTP ${response.status}`));
   }
   return body ? JSON.parse(body) : {} as T;
 }
@@ -1105,7 +1145,10 @@ function summarizeSearchOutput(value: string) {
 
 function renderLiveLine(text: string) {
   const displayText = collapseRepeatedLiveFileRefs(text);
-  const kind = /^RCA successful:/i.test(text)
+  const isLocalAgentWarning = text.includes(LOCAL_AGENT_DISCONNECTED_NOTICE);
+  const kind = isLocalAgentWarning
+    ? "warning local-agent-warning"
+    : /^RCA successful:/i.test(text)
     ? "success"
     : /^RCA failed:/i.test(text)
       ? "error"
@@ -1381,6 +1424,16 @@ export const App = registerCustomElement(
     }, [developerMode, localAgentStatus.connected]);
 
     useEffect(() => {
+      setLiveOutput((lines) => {
+        const withoutNotice = lines.filter((line) => line !== LOCAL_AGENT_DISCONNECTED_NOTICE);
+        if (developerMode && !localAgentStatus.connected) {
+          return [...withoutNotice, LOCAL_AGENT_DISCONNECTED_NOTICE].slice(-500);
+        }
+        return withoutNotice;
+      });
+    }, [developerMode, localAgentStatus.connected]);
+
+    useEffect(() => {
       if (liveOutputRef.current) {
         liveOutputRef.current.scrollTop = liveOutputRef.current.scrollHeight;
       }
@@ -1542,7 +1595,7 @@ export const App = registerCustomElement(
       if (shouldSuppressLiveLine(text)) {
         return;
       }
-      setLiveOutput((lines) => [...lines, text].slice(-500));
+      setLiveOutput((lines) => [...lines, formatErrorMessage(text)].slice(-500));
     }
 
     async function stopRun() {
@@ -1568,7 +1621,7 @@ export const App = registerCustomElement(
     async function browseWorkspace() {
       if (developerMode && !localAgentStatus.connected) {
         await loadLocalAgentStatus();
-        appendLive("Browse failed: local client agent is not connected on your machine.");
+        appendLive(`Browse failed: ${LOCAL_AGENT_DISCONNECTED_NOTICE}`);
         return;
       }
       setIsBrowsingWorkspace(true);
@@ -1683,8 +1736,8 @@ export const App = registerCustomElement(
         }
         setRunState("failed");
         setStatusText("Failed");
-        appendLive(`RCA failed: ${(error as Error).message}`);
-        addChat("assistant", `The RCA run failed: ${compactText((error as Error).message, 180)}`);
+        appendLive(`RCA failed: ${formatErrorMessage(error)}`);
+        addChat("assistant", `The RCA run failed: ${compactText(formatErrorMessage(error), 180)}`);
       } finally {
         controllerRef.current = null;
       }
@@ -1857,7 +1910,7 @@ export const App = registerCustomElement(
               <strong>{signedInLabel}</strong>
             </div>
             <div class={`status-chip ${runtime.connected ? "is-ok" : "is-bad"}`}>
-              <span>Agent</span>
+              <span>Server Agent</span>
               <strong>{isLoadingConfig ? "Checking" : runtime.connected ? "Connected" : "Offline"}</strong>
             </div>
             <a class="status-chip signout-button" href="/auth/logout">
@@ -1950,7 +2003,7 @@ export const App = registerCustomElement(
               {developerMode ? (
                 <p class={`workspace-note ${workspace && localAgentStatus.connected ? "" : "needs-attention"}`}>
                   {!localAgentStatus.connected
-                    ? "Local client agent is not connected on your machine."
+                    ? LOCAL_AGENT_DISCONNECTED_NOTICE
                     : workspace
                       ? "Developer workspace ready on your machine."
                       : "Choose the local code folder before starting RCA."}
