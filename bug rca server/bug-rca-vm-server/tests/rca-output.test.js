@@ -166,19 +166,79 @@ test("Jira 401 JSON errors are converted to plain English", () => {
   assert.doesNotMatch(message, /^\{/);
 });
 
-test("extractZipAttachmentExcerpt reads text files inside an in-memory zip attachment", () => {
+test("extractZipAttachmentExcerpt extracts important zip evidence with tight context", () => {
   const zip = new AdmZip();
-  zip.addFile("logs/error.log", Buffer.from("stack trace line", "utf8"));
-  zip.addFile("src/Foo.cs", Buffer.from("public class Foo {}", "utf8"));
+  zip.addFile("logs/error.log", Buffer.from([
+    "startup line",
+    "request before incident",
+    "ERROR NullReferenceException while posting check",
+    "at Micros.CheckPosting.Save()",
+    "request after incident",
+    "unrelated trailing line"
+  ].join("\n"), "utf8"));
+  zip.addFile("src/Foo.cs", Buffer.from([
+    "public class Foo {}",
+    "throw new InvalidOperationException();",
+    "return;"
+  ].join("\n"), "utf8"));
   zip.addFile("bin/image.png", Buffer.from([0, 1, 2, 3]));
 
   const excerpt = extractZipAttachmentExcerpt(zip.toBuffer(), "evidence.zip");
 
-  assert.match(excerpt, /evidence\.zip \/ logs\/error\.log/);
-  assert.match(excerpt, /stack trace line/);
-  assert.match(excerpt, /evidence\.zip \/ src\/Foo\.cs/);
-  assert.match(excerpt, /public class Foo/);
+  assert.match(excerpt, /evidence\.zip \/ logs\/error\.log around line 2/);
+  assert.match(excerpt, /request before incident/);
+  assert.match(excerpt, /ERROR NullReferenceException while posting check/);
+  assert.match(excerpt, /at Micros\.CheckPosting\.Save\(\)/);
+  assert.match(excerpt, /request after incident/);
+  assert.doesNotMatch(excerpt, /startup line/);
+  assert.doesNotMatch(excerpt, /unrelated trailing line/);
+  assert.match(excerpt, /evidence\.zip \/ src\/Foo\.cs around line 1/);
+  assert.match(excerpt, /throw new InvalidOperationException/);
   assert.doesNotMatch(excerpt, /image\.png/);
+});
+
+test("extractZipAttachmentExcerpt captures important evidence after thirty thousand characters", () => {
+  const zip = new AdmZip();
+  zip.addFile("logs/late.log", Buffer.from([
+    "noise".repeat(7000),
+    "line before late event",
+    "FATAL timeout while calling Jira API",
+    "stack trace follows",
+    "at JiraClient.FetchIssue()"
+  ].join("\n"), "utf8"));
+
+  const excerpt = extractZipAttachmentExcerpt(zip.toBuffer(), "late.zip");
+
+  assert.match(excerpt, /late\.zip \/ logs\/late\.log around line 2/);
+  assert.match(excerpt, /line before late event/);
+  assert.match(excerpt, /FATAL timeout while calling Jira API/);
+  assert.match(excerpt, /stack trace follows/);
+  assert.match(excerpt, /at JiraClient\.FetchIssue\(\)/);
+});
+
+test("extractZipAttachmentExcerpt ignores normal MySQL timeout configuration lines", () => {
+  const zip = new AdmZip();
+  zip.addFile("logs/startup.log", Buffer.from([
+    "Alias [LOCALDB] Settings [DatabaseType = MySql",
+    "DatabaseServer = localhost",
+    "Timeout = 30",
+    "ReplaceViews = True",
+    "Testing connection to DB [LocalDb]",
+    "Exception connecting to DB [LocalDb]",
+    "MySqlException: Unknown database 'datastore'",
+    "at MySql.Data.MySqlClient.MySqlConnection.Open()",
+    "continuing startup"
+  ].join("\n"), "utf8"));
+
+  const excerpt = extractZipAttachmentExcerpt(zip.toBuffer(), "startup.zip");
+
+  assert.doesNotMatch(excerpt, /around line 1/);
+  assert.doesNotMatch(excerpt, /around line 3/);
+  assert.match(excerpt, /startup\.zip \/ logs\/startup\.log around line 5/);
+  assert.match(excerpt, /Testing connection to DB/);
+  assert.match(excerpt, /Exception connecting to DB/);
+  assert.match(excerpt, /MySqlException: Unknown database/);
+  assert.match(excerpt, /at MySql\.Data\.MySqlClient\.MySqlConnection\.Open/);
 });
 
 test("resolveTicketScopedMcpServers requires Jira MCP for Jira and suppresses it for BugDB", () => {

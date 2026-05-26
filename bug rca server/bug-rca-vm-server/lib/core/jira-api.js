@@ -26,7 +26,9 @@ const MAX_ATTACHMENT_SIZE_BYTES = 256 * 1024;
 const MAX_ZIP_ATTACHMENT_SIZE_BYTES = 50 * 1024 * 1024;
 const MAX_TEXT_FIELD_LENGTH = 4000;
 const MAX_ATTACHMENT_EXCERPT_LENGTH = 4000;
-const MAX_ZIP_ATTACHMENT_EXCERPT_LENGTH = 30000;
+const ZIP_CONTEXT_LINES_BEFORE = 1;
+const ZIP_CONTEXT_LINES_AFTER = 2;
+const IMPORTANT_ZIP_EVIDENCE_PATTERN = /\b(?:fatal|exception|error|failed|failure|stack\s*trace|caused by|inner exception|timed out|timeout(?:exception| error| while)|denied|unauthorized|forbidden|unknown database|nullreferenceexception|invalidoperationexception|argumentexception|sqlexception|mysqlexception|ora-\d+|http\s*(?:401|403|404|500)|\b(?:401|403|404|500)\b)\b/i;
 
 function normalizeBaseUrl(value) {
   return String(value || "").trim().replace(/\/+$/, "");
@@ -349,29 +351,56 @@ function isTextLikeZipEntry(entryName) {
   return TEXT_ATTACHMENT_EXTENSIONS.has(extensionMatch ? extensionMatch[0] : "");
 }
 
+function mergeLineRanges(ranges) {
+  const merged = [];
+  for (const range of ranges.sort((left, right) => left.start - right.start)) {
+    const previous = merged[merged.length - 1];
+    if (previous && range.start <= previous.end + 1) {
+      previous.end = Math.max(previous.end, range.end);
+      continue;
+    }
+    merged.push({ ...range });
+  }
+  return merged;
+}
+
+function extractImportantZipEntryEvidence(entryText) {
+  const lines = String(entryText || "").replace(/\r\n/g, "\n").split("\n");
+  const ranges = [];
+
+  lines.forEach((line, index) => {
+    if (!IMPORTANT_ZIP_EVIDENCE_PATTERN.test(line)) {
+      return;
+    }
+    ranges.push({
+      start: Math.max(0, index - ZIP_CONTEXT_LINES_BEFORE),
+      end: Math.min(lines.length - 1, index + ZIP_CONTEXT_LINES_AFTER)
+    });
+  });
+
+  return mergeLineRanges(ranges).map((range) => ({
+    startLine: range.start + 1,
+    text: lines.slice(range.start, range.end + 1).join("\n").trim()
+  })).filter((block) => block.text);
+}
+
 function extractZipAttachmentExcerpt(zipBuffer, filename = "attachment.zip") {
   const zip = new AdmZip(zipBuffer);
   const sections = [];
-  let remaining = MAX_ZIP_ATTACHMENT_EXCERPT_LENGTH;
 
   for (const entry of zip.getEntries()) {
     const entryName = String(entry.entryName || "").replace(/\\/g, "/");
-    if (entry.isDirectory || !isTextLikeZipEntry(entryName) || remaining <= 0) {
+    if (entry.isDirectory || !isTextLikeZipEntry(entryName)) {
       continue;
     }
 
-    const header = `--- ${filename} / ${entryName} ---`;
-    const body = truncateText(entry.getData().toString("utf8"), Math.max(0, remaining - header.length - 2));
-    if (!body) {
-      continue;
+    const evidenceBlocks = extractImportantZipEntryEvidence(entry.getData().toString("utf8"));
+    for (const block of evidenceBlocks) {
+      sections.push(`--- ${filename} / ${entryName} around line ${block.startLine} ---\n${block.text}`);
     }
-
-    const section = `${header}\n${body}`;
-    sections.push(section);
-    remaining -= section.length + 2;
   }
 
-  return truncateText(sections.join("\n\n"), MAX_ZIP_ATTACHMENT_EXCERPT_LENGTH);
+  return sections.join("\n\n").trim();
 }
 
 async function maybeFetchAttachmentExcerpt(attachment, headers, sslVerify) {
