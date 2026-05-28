@@ -1067,19 +1067,18 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
         const [currentSessionId, setCurrentSessionId] = (0, hooks_1.useState)("");
         const [isLoadingConfig, setIsLoadingConfig] = (0, hooks_1.useState)(true);
         const [leftPanelCollapsed, setLeftPanelCollapsed] = (0, hooks_1.useState)(false);
-            const controllerRef = (0, hooks_1.useRef)(null);
-            const liveOutputRef = (0, hooks_1.useRef)(null);
-            const endNoticeShownRef = (0, hooks_1.useRef)(false);
-            const lastFailureDetailRef = (0, hooks_1.useRef)("");
+        const controllerRef = (0, hooks_1.useRef)(null);
+        const liveOutputRef = (0, hooks_1.useRef)(null);
+        const endNoticeShownRef = (0, hooks_1.useRef)(false);
         const products = (0, hooks_1.useMemo)(() => normalizeProducts(runtime.products || []), [runtime.products]);
         const selectedProductConfig = products.find((product) => product.key === selectedProduct) || products[0];
         const workspace = developerMode
             ? folderPath.trim()
             : (selectedProductConfig === null || selectedProductConfig === void 0 ? void 0 : selectedProductConfig.defaultWorkspace) || "";
         const isDescriptionTicket = ticketType === "description";
-        const ticketSourceLabel = isDescriptionTicket ? "Problem Statement" : "Jira";
-        const ticketInputLabel = isDescriptionTicket ? "Problem Statement" : "Jira Number";
-        const ticketPlaceholder = "FPS-137892";
+        const ticketSourceLabel = isDescriptionTicket ? "Problem Statement" : ticketType === "bugdb" ? "BugDB" : "Jira";
+        const ticketInputLabel = isDescriptionTicket ? "Problem Statement" : ticketType === "bugdb" ? "BugDB Number" : "Jira Number";
+        const ticketPlaceholder = ticketType === "bugdb" ? "Enter BugDB number" : "FPS-137892";
         const ticketReady = isDescriptionTicket ? Boolean(bugDescription.trim()) : Boolean(ticketId.trim());
         const developerAgentReady = !developerMode || localAgentStatus.connected;
         const canRun = ticketReady && Boolean(workspace) && developerAgentReady && runState !== "running";
@@ -1374,7 +1373,6 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                 setCurrentSessionId("");
                 setSelectedHistoryId("");
                 endNoticeShownRef.current = false;
-                lastFailureDetailRef.current = "";
                 setLiveOutput([]);
                 setRcaResult("");
                 setAdvancedAnalysis("");
@@ -1391,6 +1389,18 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                             },
                             body: JSON.stringify({
                                 ticketSource: "jira",
+                                ticketId: ticketId.trim()
+                            })
+                        });
+                    } else if (ticketType === "bugdb") {
+                        appendLive(`Fetching BugDB evidence for bug ${ticketId.trim()}`);
+                        prefetchedTicketEvidence = yield fetchJson("/api/ticket-evidence", {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json"
+                            },
+                            body: JSON.stringify({
+                                ticketSource: "bugdb",
                                 ticketId: ticketId.trim()
                             })
                         });
@@ -1414,6 +1424,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                             bugDescription: isDescriptionTicket ? descriptionText : "",
                             issueTitle: (prefetchedTicketEvidence === null || prefetchedTicketEvidence === void 0 ? void 0 : prefetchedTicketEvidence.issueTitle) || "",
                             jiraEvidence: (prefetchedTicketEvidence === null || prefetchedTicketEvidence === void 0 ? void 0 : prefetchedTicketEvidence.jiraEvidence) || null,
+                            bugDbEvidence: (prefetchedTicketEvidence === null || prefetchedTicketEvidence === void 0 ? void 0 : prefetchedTicketEvidence.bugDbEvidence) || null,
                             version: "",
                             model: "",
                             extraInstructions: PRODUCT_GENERIC_GUIDANCE
@@ -1526,25 +1537,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                 return;
             }
             if (eventName === "stderr" || eventName === "warning") {
-                const detail = payload.text || payload.message || payload.detail || "";
-                if (eventName === "stderr" && detail) {
-                    lastFailureDetailRef.current = String(detail);
-                }
-                appendLive(`${eventName}: ${compactText(detail, 700)}`);
-                return;
-            }
-            if (eventName === "error") {
-                const detail = payload.error || payload.message || "The RCA run failed before Codex produced output.";
-                lastFailureDetailRef.current = String(detail);
-                setRunState("failed");
-                setStatusText("Failed");
-                setRcaResult(String(detail));
-                if (!endNoticeShownRef.current) {
-                    appendLive(`RCA failed: ${compactText(detail, 320)}`);
-                    endNoticeShownRef.current = true;
-                }
-                addChat("assistant", `The RCA run failed: ${compactText(detail, 180)}`);
-                loadSessionHistory();
+                appendLive(`${eventName}: ${compactText(payload.text || payload.message || payload.detail, 700)}`);
                 return;
             }
             if (eventName === "final") {
@@ -1552,9 +1545,6 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                 const failureDetail = payload.stderr || ((_g = (_f = payload.session) === null || _f === void 0 ? void 0 : _f.output) === null || _g === void 0 ? void 0 : _g.stderr) || payload.error || "";
                 const completed = ((_h = payload.session) === null || _h === void 0 ? void 0 : _h.status) === "completed";
                 const summary = buildCompressedRcaResult(payload);
-                if (failureDetail) {
-                    lastFailureDetailRef.current = String(failureDetail);
-                }
                 if (payload.sessionId || ((_j = payload.session) === null || _j === void 0 ? void 0 : _j.id)) {
                     setSelectedHistoryId(payload.sessionId || ((_k = payload.session) === null || _k === void 0 ? void 0 : _k.id) || "");
                 }
@@ -1581,12 +1571,11 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                 setRunState(ok ? "completed" : stopped ? "stopped" : "failed");
                 setStatusText(ok ? "Completed" : stopped ? "Stopped" : "Failed");
                 if (!endNoticeShownRef.current) {
-                    const failureDetail = payload.error || payload.message || lastFailureDetailRef.current || "";
                     appendLive(ok
                         ? "RCA successful: check RCA Result for the summary."
                         : stopped
                             ? "RCA stopped: the active run was cancelled before completion."
-                            : `RCA failed: ${compactText(failureDetail || `Process exited with code ${(_l = payload.code) !== null && _l !== void 0 ? _l : "unknown"}.`, 320)}`);
+                            : `RCA failed: ${compactText(payload.error || payload.message || `Process exited with code ${(_l = payload.code) !== null && _l !== void 0 ? _l : "unknown"}.`, 320)}`);
                     endNoticeShownRef.current = true;
                 }
             }
@@ -1595,7 +1584,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                                                 ? "Local client agent is not connected on your machine."
                                                 : workspace
                                                     ? "Developer workspace ready on your machine."
-                                                    : "Choose the local code folder before starting RCA." })) : null] }), (0, jsx_runtime_1.jsxs)("section", { class: "control-card", children: [(0, jsx_runtime_1.jsxs)("div", { class: "section-heading", children: [(0, jsx_runtime_1.jsx)("span", { children: "Ticket" }), (0, jsx_runtime_1.jsx)("strong", { children: "Bug Source" })] }), (0, jsx_runtime_1.jsxs)("div", { class: "radio-row", role: "radiogroup", "aria-label": "Ticket source", children: [(0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "ticketType", checked: ticketType === "jira", onChange: () => setTicketType("jira") }), "Jira Number"] }), (0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "ticketType", checked: ticketType === "description", onChange: () => setTicketType("description") }), "Problem Statement"] })] }), (0, jsx_runtime_1.jsxs)("label", { class: "field-block", children: [(0, jsx_runtime_1.jsx)("span", { children: ticketInputLabel }), isDescriptionTicket ? ((0, jsx_runtime_1.jsx)("textarea", { class: "bug-description-input", rows: 5, placeholder: "Problem Statement", value: bugDescription, onInput: (event) => setBugDescription(event.currentTarget.value) })) : ((0, jsx_runtime_1.jsx)("input", { value: ticketId, onInput: (event) => {
+                                                    : "Choose the local code folder before starting RCA." })) : null] }), (0, jsx_runtime_1.jsxs)("section", { class: "control-card", children: [(0, jsx_runtime_1.jsxs)("div", { class: "section-heading", children: [(0, jsx_runtime_1.jsx)("span", { children: "Ticket" }), (0, jsx_runtime_1.jsx)("strong", { children: "Bug Source" })] }), (0, jsx_runtime_1.jsxs)("div", { class: "radio-row", role: "radiogroup", "aria-label": "Ticket source", children: [(0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "ticketType", checked: ticketType === "bugdb", onChange: () => setTicketType("bugdb") }), "BugDB Number"] }), (0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "ticketType", checked: ticketType === "jira", onChange: () => setTicketType("jira") }), "Jira Number"] }), (0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "ticketType", checked: ticketType === "description", onChange: () => setTicketType("description") }), "Problem Statement"] })] }), (0, jsx_runtime_1.jsxs)("label", { class: "field-block", children: [(0, jsx_runtime_1.jsx)("span", { children: ticketInputLabel }), isDescriptionTicket ? ((0, jsx_runtime_1.jsx)("textarea", { class: "bug-description-input", rows: 5, placeholder: "Problem Statement", value: bugDescription, onInput: (event) => setBugDescription(event.currentTarget.value) })) : ((0, jsx_runtime_1.jsx)("input", { value: ticketId, onInput: (event) => {
                                                         const value = event.currentTarget.value;
                                                         setTicketId(ticketType === "jira" ? value.toUpperCase() : value);
                                                     }, placeholder: ticketPlaceholder }))] }), (0, jsx_runtime_1.jsxs)("div", { class: "button-row", children: [(0, jsx_runtime_1.jsx)("button", { class: "primary-button", type: "button", disabled: !canRun, title: !canRun ? runDisabledReason : "Start RCA", onClick: startRun, children: "Start RCA" }), (0, jsx_runtime_1.jsx)("button", { class: "secondary-button", type: "button", disabled: runState !== "running", onClick: stopRun, children: "Stop" })] }), !canRun && runDisabledReason ? (0, jsx_runtime_1.jsx)("p", { class: "run-disabled-note", children: runDisabledReason }) : null] }), (0, jsx_runtime_1.jsxs)("section", { class: "control-card chat-card", children: [(0, jsx_runtime_1.jsx)("div", { class: "section-heading", children: (0, jsx_runtime_1.jsx)("span", { children: "Chat history" }) }), (0, jsx_runtime_1.jsx)("div", { class: "session-history-list", children: sessionHistory.length ? sessionHistory.map((session) => ((0, jsx_runtime_1.jsxs)("article", { class: `session-history-item ${selectedHistoryId === session.id ? "is-selected" : ""}`.trim(), role: "button", tabIndex: 0, title: formatSessionHistoryTitle(session), onClick: () => openHistorySession(session.id), onKeyDown: (event) => {

@@ -69,6 +69,11 @@ const {
 const {
   fetchDirectJiraIssueEvidence
 } = require("./lib/core/jira-api");
+// BugDB REST API client — fetches bug details directly from Oracle BugDB
+const {
+  fetchDirectBugDbEvidence,
+  resolveBugDbConfig
+} = require("./lib/core/bugdb-api");
 const {
   addGenericJiraMcpAliases,
   resolveTicketScopedMcpServers
@@ -1598,15 +1603,56 @@ async function handleTicketEvidence(req, res) {
 
   const ticketSource = String(payload.ticketSource || payload.ticketType || "").trim().toLowerCase();
   const ticketId = String(payload.ticketId || "").trim();
-  if (ticketSource !== "jira") {
-    sendJson(res, 400, { error: "Only Jira evidence prefetch is supported by this endpoint." });
+  // Validate: only jira and bugdb are supported ticket sources
+  if (ticketSource !== "jira" && ticketSource !== "bugdb") {
+    sendJson(res, 400, { error: "Only jira and bugdb evidence prefetch is supported by this endpoint." });
     return;
   }
   if (!ticketId) {
-    sendJson(res, 400, { error: "Jira ticket ID is required." });
+    sendJson(res, 400, { error: "Ticket ID / Bug number is required." });
     return;
   }
 
+  // --- BugDB path ---
+  if (ticketSource === "bugdb") {
+    // Check credentials are configured before attempting fetch
+    if (!resolveBugDbConfig()) {
+      sendJson(res, 409, { error: "BugDB is not configured on this server. Set BUGDB_CLIENT_ID and BUGDB_CLIENT_SECRET." });
+      return;
+    }
+    try {
+      // Fetch bug details + download text attachments only (skip images/binaries)
+      const bugDbEvidence = await fetchDirectBugDbEvidence(ticketId, { downloadAttachments: true, textOnly: true });
+
+      // Strip server-internal filesystem paths before sending to browser
+      const { attachmentDirectory, ...safeEvidence } = bugDbEvidence;
+
+      // Replace raw HTML 404 error pages with short readable messages
+      const cleanErrors = Object.fromEntries(
+        Object.entries(safeEvidence.endpointErrors || {}).map(([k, v]) => [
+          k,
+          v ? (/HTTP 404/i.test(v) ? `${k}: not available (HTTP 404)` : String(v).split("\n")[0].slice(0, 200)) : ""
+        ])
+      );
+
+      // Remove server-only fields (localPath, _skipped) from each attachment
+      const cleanAttachments = (safeEvidence.attachments || []).map(
+        ({ localPath, _skipped, ...a }) => a
+      );
+
+      sendJson(res, 200, {
+        ticketSource: "bugdb",
+        ticketId: safeEvidence.bugNumber || ticketId,
+        issueTitle: safeEvidence.synopsis || "",
+        bugDbEvidence: { ...safeEvidence, attachments: cleanAttachments, endpointErrors: cleanErrors }
+      });
+    } catch (error) {
+      sendJson(res, 409, { error: error.message || `Failed to fetch BugDB bug ${ticketId}.` });
+    }
+    return;
+  }
+
+  // --- Jira path ---
   try {
     const jiraEvidence = await fetchDirectJiraIssueEvidence(ticketId);
     sendJson(res, 200, {

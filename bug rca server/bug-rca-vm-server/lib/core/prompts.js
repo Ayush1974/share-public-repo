@@ -3,6 +3,8 @@ const { APP_ROOT, DEFAULT_MODEL, PRODUCT_OPTIONS, SKILL_NAME } = require("./conf
 const { getDefaultPrompt } = require("./file-utils");
 const { isSyntheticIssueTitle, normalizeIssueTitleValue, normalizeTicketIdValue } = require("./parsing");
 const { normalizeTicketSource } = require("./ticket-routing");
+// Formats raw BugDB evidence into a clean text block for the AI prompt
+const { formatBugDbEvidence } = require("./bugdb-api");
 
 const EVIDENCE_FIRST_GUIDANCE = "Focus on comments, audit history, attachments, logs, and reproducible evidence before concluding RCA.";
 const LEGACY_PRODUCT_GENERIC_GUIDANCE = "legacy-product-generic-guidance";
@@ -158,6 +160,10 @@ function normalizeRequest(payload) {
   const suppliedJiraEvidence = payload.jiraEvidence && typeof payload.jiraEvidence === "object"
     ? payload.jiraEvidence
     : null;
+  // BugDB evidence pre-fetched by the server before the run starts
+  const suppliedBugDbEvidence = payload.bugDbEvidence && typeof payload.bugDbEvidence === "object"
+    ? payload.bugDbEvidence
+    : null;
   const product = {
     ...productConfig,
     key: productConfig.key || slugifyProductKey(productFamily),
@@ -173,6 +179,7 @@ function normalizeRequest(payload) {
     issueTitle,
     bugDescription,
     jiraEvidence: ticketSource === "description" ? buildManualBugEvidence(bugDescription, issueTitle) : suppliedJiraEvidence,
+    bugDbEvidence: ticketSource === "bugdb" ? suppliedBugDbEvidence : null,
     workspace,
     version,
     model,
@@ -465,11 +472,25 @@ function buildAnalysisPrompt(request, previousSession) {
       prefix.push(`Bug Description Investigation Hints:\n${descriptionHints.map((hint) => `- ${hint}`).join("\n")}`);
     }
   } else {
-    prefix.push(
-      `This ticket is BugDB-backed. Use the packaged references folder as the BugDB workflow path: \`${PACKAGED_REFERENCES_ROOT}\`.`,
-      "Within the run workspace, prefer `./references/BUGINTWFLOW.md`, `./references/.clinerules`, and `./references/generate-memory-bank-FINAL.md` when present.",
-      "Do not use Jira MCP as BugDB evidence. If BugDB facts are unavailable beyond the packaged workflow references, say that explicitly instead of inventing Jira-backed details."
-    );
+    if (request.bugDbEvidence) {
+      // Server already fetched live BugDB data — inject it directly into the prompt
+      prefix.push(
+        "This ticket is BugDB-backed. Use the prefetched BugDB REST API evidence in this prompt as the required factual source for this run.",
+        "Do not try BugDB MCP or Jira MCP in this run. The server already fetched the BugDB bug details directly before starting Codex.",
+        "If the prefetched BugDB evidence is incomplete, call that out explicitly instead of inventing missing bug facts."
+      );
+      const bugDbEvidenceBlock = formatBugDbEvidence(request.bugDbEvidence);
+      if (bugDbEvidenceBlock) {
+        prefix.push(`Prefetched BugDB Evidence:\n${bugDbEvidenceBlock}`);
+      }
+    } else {
+      // No live data — fall back to packaged reference files in the workspace
+      prefix.push(
+        `This ticket is BugDB-backed. Use the packaged references folder as the BugDB workflow path: \`${PACKAGED_REFERENCES_ROOT}\`.`,
+        "Within the run workspace, prefer `./references/BUGINTWFLOW.md`, `./references/.clinerules`, and `./references/generate-memory-bank-FINAL.md` when present.",
+        "Do not use Jira MCP as BugDB evidence. If BugDB facts are unavailable beyond the packaged workflow references, say that explicitly instead of inventing Jira-backed details."
+      );
+    }
   }
 
   if (request.ticketId) {
