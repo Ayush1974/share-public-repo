@@ -263,7 +263,7 @@ define('components/app',["require", "exports", "preact/jsx-runtime", "ojs/ojvcom
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.App = void 0;
     const PRODUCT_GENERIC_GUIDANCE = "Keep the RCA specific to the selected Jira/BugDB ticket, its exact symptom, and the selected Oracle Restaurants product. Do not drift into generic product guidance.";
-    const DEFAULT_LOCAL_AGENT_BASE_URL = "http://127.0.0.1:3210";
+    const DEFAULT_LOCAL_AGENT_BASE_URL = "http://127.0.0.1:3211";
     const LOCAL_AGENT_RECONNECT_MS = 3000;
     const EMPTY_LOCAL_AGENT_STATUS = {
         connected: false,
@@ -1438,7 +1438,10 @@ define('components/app',["require", "exports", "preact/jsx-runtime", "ojs/ojvcom
                             requireElevatedExecution: false,
                             transport: "broker"
                         });
-                        return;
+                        return {
+                            connected: true,
+                            transport: "broker"
+                        };
                     }
                 }
                 catch (error) {
@@ -1447,9 +1450,9 @@ define('components/app',["require", "exports", "preact/jsx-runtime", "ojs/ojvcom
                     const status = yield fetchJson(`${DEFAULT_LOCAL_AGENT_BASE_URL}/api/health`);
                     if (status.serverMode !== "agent") {
                         setLocalAgentStatus(EMPTY_LOCAL_AGENT_STATUS);
-                        return;
+                        return EMPTY_LOCAL_AGENT_STATUS;
                     }
-                    setLocalAgentStatus({
+                    const nextStatus = {
                         connected: Boolean(status.ok),
                         host: status.host || "",
                         port: Number(status.port || 3210),
@@ -1457,10 +1460,13 @@ define('components/app',["require", "exports", "preact/jsx-runtime", "ojs/ojvcom
                         elevated: Boolean(status.elevated),
                         requireElevatedExecution: Boolean(status.requireElevatedExecution),
                         transport: "direct"
-                    });
+                    };
+                    setLocalAgentStatus(nextStatus);
+                    return nextStatus;
                 }
                 catch (error) {
                     setLocalAgentStatus(EMPTY_LOCAL_AGENT_STATUS);
+                    return EMPTY_LOCAL_AGENT_STATUS;
                 }
             });
         }
@@ -1581,9 +1587,11 @@ define('components/app',["require", "exports", "preact/jsx-runtime", "ojs/ojvcom
         function browseWorkspace() {
             return __awaiter(this, void 0, void 0, function* () {
                 if (developerMode && !localAgentStatus.connected) {
-                    yield loadLocalAgentStatus();
-                    appendLive("Browse failed: local client agent is not connected on your machine.");
-                    return;
+                    const effectiveLocalAgentStatus = yield loadLocalAgentStatus();
+                    if (!(effectiveLocalAgentStatus === null || effectiveLocalAgentStatus === void 0 ? void 0 : effectiveLocalAgentStatus.connected)) {
+                        appendLive("Browse failed: local client agent is not connected on your machine.");
+                        return;
+                    }
                 }
                 setIsBrowsingWorkspace(true);
                 try {

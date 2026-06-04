@@ -160,15 +160,20 @@ function brokerAgentIsActive(agent) {
   return Boolean(agent && Date.now() - new Date(agent.lastSeenAt || 0).getTime() <= BROKER_AGENT_STALE_MS);
 }
 
+function getSingleActiveBrokerAgent() {
+  const activeAgents = [...brokerAgents.values()].filter((agent) => brokerAgentIsActive(agent));
+  return activeAgents.length === 1 ? activeAgents[0] : null;
+}
+
 function getBoundBrokerAgent(user) {
   const key = buildUserKey(user);
   if (!key) {
-    return null;
+    return getSingleActiveBrokerAgent();
   }
 
   const agentId = brokerUserBindings.get(key);
   if (!agentId) {
-    return null;
+    return getSingleActiveBrokerAgent();
   }
 
   const agent = brokerAgents.get(agentId) || null;
@@ -177,7 +182,7 @@ function getBoundBrokerAgent(user) {
       agent.userKey = "";
     }
     brokerUserBindings.delete(key);
-    return null;
+    return getSingleActiveBrokerAgent();
   }
 
   return agent;

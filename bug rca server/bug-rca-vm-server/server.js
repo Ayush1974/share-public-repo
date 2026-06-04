@@ -874,6 +874,27 @@ function buildCodexChildEnv(sessionId = "", mcpServers = []) {
   return env;
 }
 
+function isNoisyCodexStderrLine(line) {
+  return /WARN codex_core_plugins::loader: failed to load plugin: plugin is not installed/.test(line)
+    || /WARN codex_core_plugins::startup_remote_sync: skipping startup remote plugin sync/.test(line)
+    || /WARN codex_core_skills::loader: ignoring interface\.icon_(?:small|large): icon path must not contain/.test(line)
+    || /WARN codex_core::session::turn: stream disconnected - retrying sampling request/.test(line);
+}
+
+function filterCodexStderrNoise(text) {
+  const raw = String(text || "");
+  const trailingNewline = /\r?\n$/.test(raw);
+  const lines = raw.split(/\r?\n/).filter((line, index, allLines) => (
+    (line || index < allLines.length - 1) && !isNoisyCodexStderrLine(line)
+  ));
+
+  if (!lines.length) {
+    return "";
+  }
+
+  return `${lines.join("\n")}${trailingNewline ? "\n" : ""}`;
+}
+
 function getHostedCodexPreflightIssue(request) {
   if (!request || request.workspaceMode !== "shared-api") {
     return "";
@@ -1998,13 +2019,70 @@ function handleRun(req, res, currentUser = null) {
       res.end();
       return;
     }
-    child = spawn(codexSpawn.command, codexSpawn.args, {
-      cwd: APP_ROOT,
-      env: childEnv,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-      ...codexSpawn.options
-    });
+    try {
+      child = spawn(codexSpawn.command, codexSpawn.args, {
+        cwd: APP_ROOT,
+        env: childEnv,
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+        ...codexSpawn.options
+      });
+    } catch (error) {
+      const completedAt = new Date().toISOString();
+      const durationMs = new Date(completedAt).getTime() - new Date(startedAt).getTime();
+      const message = error.message || "Failed to start Codex.";
+      ACTIVE_SESSION_IDS.delete(sessionId);
+      RUNNING_SESSION_HANDLES.delete(sessionId);
+      session = saveSession({
+        ...session,
+        status: "failed",
+        completedAt,
+        durationMs,
+        error: message,
+        output: {
+          ...session.output,
+          liveText: liveText.trim(),
+          stderr: normalizeReportText(message)
+        },
+        process: {
+          code: 1,
+          signal: "",
+          error: message
+        }
+      });
+      writeArtifacts({
+        productLabel: request.product.family,
+        mode: request.mode,
+        ticketId: request.ticketId,
+        workspace: request.workspace,
+        version: request.version,
+        prompt,
+        liveText: liveText.trim(),
+        finalMessage: "",
+        errorText: normalizeReportText(message)
+      }, currentUser);
+      safeSendSse(res, "error", {
+        sessionId,
+        message
+      }, {
+        paddingBytes: STREAM_PADDING_BYTES
+      });
+      safeSendSse(res, "done", {
+        sessionId,
+        code: 1,
+        signal: "",
+        hasFinalMessage: false,
+        status: "failed",
+        message,
+        error: message
+      }, {
+        paddingBytes: STREAM_PADDING_BYTES
+      });
+      if (!res.writableEnded) {
+        res.end();
+      }
+      return;
+    }
     session = saveSession({
       ...session,
       process: {
@@ -2156,7 +2234,10 @@ function handleRun(req, res, currentUser = null) {
 
     child.stderr.on("data", (chunk) => {
       markActivity();
-      const text = chunk.toString("utf8");
+      const text = filterCodexStderrNoise(chunk.toString("utf8"));
+      if (!text.trim()) {
+        return;
+      }
       stderrBuffer += text;
       persistRunningSession();
       safeSendSse(res, "stderr", { sessionId, text });

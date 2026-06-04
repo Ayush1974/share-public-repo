@@ -278,22 +278,78 @@ function resolveCodexLaunch(command, args) {
   };
 }
 
+function sanitizeCodexConfigToml(content) {
+  const skippedSections = /^(plugins(?:\.|$)|marketplaces(?:\.|$)|mcp_servers\.node_repl(?:\.|$)|desktop(?:\.|$))/;
+  let skipSection = false;
+
+  return String(content || "")
+    .split(/\r?\n/)
+    .filter((line) => {
+      const sectionMatch = line.match(/^\s*\[([^\]]+)\]\s*$/);
+      if (sectionMatch) {
+        skipSection = skippedSections.test(sectionMatch[1].trim());
+      }
+
+      return !skipSection;
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd() + "\n";
+}
+
+function resetIsolatedCodexProfile(codexHome) {
+  ["plugins", "skills", "cache", ".tmp", "tmp"].forEach((folderName) => {
+    const folderPath = path.join(codexHome, folderName);
+    try {
+      fs.rmSync(folderPath, { recursive: true, force: true });
+    } catch (error) {
+      // Profile cleanup is best-effort; a locked cache should not block RCA.
+    }
+  });
+}
+
 function ensureIsolatedCodexHome() {
   const profileHome = path.join(APP_ROOT, "data", "codex-profile");
   const codexHome = path.join(profileHome, ".codex");
   const sourceCodexHome = path.join(os.homedir(), ".codex");
 
   fs.mkdirSync(codexHome, { recursive: true });
+  resetIsolatedCodexProfile(codexHome);
 
   ["auth.json", "config.toml", "installation_id", "version.json"].forEach((fileName) => {
     const sourcePath = path.join(sourceCodexHome, fileName);
     const targetPath = path.join(codexHome, fileName);
     if (fs.existsSync(sourcePath)) {
-      fs.copyFileSync(sourcePath, targetPath);
+      if (fileName === "config.toml") {
+        fs.writeFileSync(targetPath, sanitizeCodexConfigToml(fs.readFileSync(sourcePath, "utf8")), "utf8");
+      } else {
+        fs.copyFileSync(sourcePath, targetPath);
+      }
     }
   });
 
   return { profileHome, codexHome };
+}
+
+function isNoisyCodexStderrLine(line) {
+  return /WARN codex_core_plugins::loader: failed to load plugin: plugin is not installed/.test(line)
+    || /WARN codex_core_plugins::startup_remote_sync: skipping startup remote plugin sync/.test(line)
+    || /WARN codex_core_skills::loader: ignoring interface\.icon_(?:small|large): icon path must not contain/.test(line)
+    || /WARN codex_core::session::turn: stream disconnected - retrying sampling request/.test(line);
+}
+
+function filterCodexStderrNoise(text) {
+  const raw = String(text || "");
+  const trailingNewline = /\r?\n$/.test(raw);
+  const lines = raw.split(/\r?\n/).filter((line, index, allLines) => (
+    (line || index < allLines.length - 1) && !isNoisyCodexStderrLine(line)
+  ));
+
+  if (!lines.length) {
+    return "";
+  }
+
+  return `${lines.join("\n")}${trailingNewline ? "\n" : ""}`;
 }
 
 function buildCodexChildEnv() {
@@ -867,14 +923,67 @@ function handleRun(req, res) {
       workspace: request.workspace
     });
 
-    const codexSpawn = resolveCodexLaunch(CODEX_BIN, args);
-    child = spawn(codexSpawn.command, codexSpawn.args, {
-      cwd: APP_ROOT,
-      env: buildCodexChildEnv(),
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-      ...codexSpawn.options
-    });
+    let codexSpawn = null;
+    try {
+      codexSpawn = resolveCodexLaunch(CODEX_BIN, args);
+      child = spawn(codexSpawn.command, codexSpawn.args, {
+        cwd: APP_ROOT,
+        env: buildCodexChildEnv(),
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+        ...codexSpawn.options
+      });
+    } catch (error) {
+      const completedAt = new Date().toISOString();
+      const durationMs = new Date(completedAt).getTime() - new Date(startedAt).getTime();
+      const message = error.message || "Failed to start Codex.";
+      ACTIVE_SESSION_IDS.delete(sessionId);
+      RUNNING_SESSION_HANDLES.delete(sessionId);
+      session = saveSession({
+        ...session,
+        status: "failed",
+        completedAt,
+        durationMs,
+        output: {
+          ...session.output,
+          liveText: liveText.trim(),
+          stderr: normalizeReportText(message)
+        },
+        error: message,
+        process: {
+          code: 1,
+          signal: "",
+          error: message
+        }
+      });
+
+      writeArtifacts({
+        productLabel: request.product.family,
+        mode: request.mode,
+        ticketId: request.ticketId,
+        workspace: request.workspace,
+        version: request.version,
+        prompt,
+        liveText: liveText.trim(),
+        finalMessage: "",
+        errorText: normalizeReportText(message)
+      });
+
+      safeSendSse(res, "error", { sessionId, message });
+      safeSendSse(res, "done", {
+        sessionId,
+        code: 1,
+        signal: "",
+        hasFinalMessage: false,
+        status: "failed",
+        message,
+        error: message
+      });
+      if (!res.writableEnded) {
+        res.end();
+      }
+      return;
+    }
     session = saveSession({
       ...session,
       process: {
@@ -1019,7 +1128,10 @@ function handleRun(req, res) {
 
     child.stderr.on("data", (chunk) => {
       markActivity();
-      const text = chunk.toString("utf8");
+      const text = filterCodexStderrNoise(chunk.toString("utf8"));
+      if (!text.trim()) {
+        return;
+      }
       stderrBuffer += text;
       safeSendSse(res, "stderr", { sessionId, text });
     });

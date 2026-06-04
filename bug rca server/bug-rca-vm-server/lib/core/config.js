@@ -19,6 +19,53 @@ function readPositiveMs(value, fallback, minimum = 0) {
   return numeric;
 }
 
+function resolveDefaultCodexBin() {
+  if (process.env.CODEX_BIN) {
+    return process.env.CODEX_BIN;
+  }
+
+  if (process.platform !== "win32") {
+    return "codex";
+  }
+
+  const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+  const appData = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+  const codexBinRoot = path.join(localAppData, "OpenAI", "Codex", "bin");
+  const candidates = [];
+
+  if (fs.existsSync(codexBinRoot)) {
+    try {
+      const versionedBins = fs
+        .readdirSync(codexBinRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => {
+          const filePath = path.join(codexBinRoot, entry.name, "codex.exe");
+          if (!fs.existsSync(filePath)) {
+            return null;
+          }
+          return {
+            filePath,
+            mtimeMs: fs.statSync(filePath).mtimeMs
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+      versionedBins.forEach((entry) => candidates.push(entry.filePath));
+    } catch (error) {
+      // Fall through to the stable app-local and npm shim locations.
+    }
+  }
+
+  candidates.push(
+    path.join(codexBinRoot, "codex.exe"),
+    path.join(appData, "npm", "codex.cmd"),
+    path.join(os.homedir(), "AppData", "Roaming", "npm", "codex.cmd")
+  );
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || "codex.cmd";
+}
+
 const PORT = Number(process.env.PORT || 3210);
 const HOST = process.env.HOST || "127.0.0.1";
 const SERVER_MODE = ["combined", "agent", "ui"].includes(String(process.env.RCA_SERVER_MODE || "").trim().toLowerCase())
@@ -26,7 +73,7 @@ const SERVER_MODE = ["combined", "agent", "ui"].includes(String(process.env.RCA_
   : "combined";
 const SERVE_AGENT_API = SERVER_MODE !== "ui";
 const SERVE_UI = SERVER_MODE !== "agent";
-const CODEX_BIN = process.env.CODEX_BIN || (process.platform === "win32" ? "codex.cmd" : "codex");
+const CODEX_BIN = resolveDefaultCodexBin();
 const DEFAULT_MODEL = process.env.CODEX_MODEL || "";
 const CODEX_FULL_ACCESS = String(process.env.CODEX_FULL_ACCESS || "true").trim().toLowerCase() !== "false";
 const REQUIRE_ELEVATED_EXECUTION = String(process.env.REQUIRE_ELEVATED_EXECUTION || "true").trim().toLowerCase() !== "false";

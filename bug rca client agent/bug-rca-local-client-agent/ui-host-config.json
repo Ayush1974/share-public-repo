@@ -1,6 +1,6 @@
 ﻿{
     "autoOpenBrowser":  true,
     "pollTimeoutMs":  25000,
-    "uiBaseUrl":  "http://burvm08103.us.oracle.com:3210"
+    "uiBaseUrl":  "http://127.0.0.1:3210"
 }
 
