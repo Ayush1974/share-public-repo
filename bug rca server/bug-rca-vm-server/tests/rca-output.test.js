@@ -1,7 +1,9 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const AdmZip = require("adm-zip");
 
 const { selectPreferredFinalMessage } = require("../lib/file-utils");
+const { extractZipAttachmentExcerpt, formatJiraApiError } = require("../lib/core/jira-api");
 const { parseNamedSections, parseRcaFields } = require("../lib/parsing");
 const { buildSessionPrompt, formatJiraEvidenceForPrompt, normalizeRequest } = require("../lib/prompts");
 const { evaluateRcaOutput } = require("../lib/rca-output");
@@ -93,6 +95,32 @@ test("buildSessionPrompt uses prefetched Jira REST evidence for Jira tickets and
   assert.match(bugdbPrompt, /Do not use Jira MCP as BugDB evidence/i);
 });
 
+test("buildSessionPrompt uses prefetched BugDB REST evidence when supplied", () => {
+  const bugdbRequest = normalizeRequest({
+    product: "simphony",
+    workspace: "shared://simphony",
+    ticketSource: "bugdb",
+    ticketId: "39090104",
+    issueTitle: "",
+    bugDbEvidence: {
+      bugNumber: "39090104",
+      synopsis: "BugDB synopsis from direct API",
+      problemStatement: "Failure reproduced from BugDB evidence.",
+      comments: [{ author: "Ayush", created: "2026-06-04", body: "BugDB comment evidence" }],
+      attachments: [{ filename: "bugdb.log", size: 1024, content: "BugDB attachment stack trace" }]
+    },
+    extraInstructions: "Keep the RCA specific to the selected Jira/BugDB ticket, its exact symptom, and the selected Oracle Restaurants product. Do not drift into generic product guidance."
+  });
+
+  const prompt = buildSessionPrompt(bugdbRequest, null);
+
+  assert.match(prompt, /Use the prefetched BugDB REST API evidence in this prompt as the required factual source/i);
+  assert.match(prompt, /Prefetched BugDB Evidence:/i);
+  assert.match(prompt, /BugDB synopsis from direct API/i);
+  assert.match(prompt, /BugDB comment evidence/i);
+  assert.doesNotMatch(prompt, /Use the packaged references folder as the BugDB workflow path/i);
+});
+
 test("buildSessionPrompt steers Jira-backed runs toward Jira-evidenced Simphony files before broad searches", () => {
   const request = {
     ...normalizeRequest({
@@ -146,6 +174,113 @@ test("formatJiraEvidenceForPrompt formats Jira fields comments and attachments",
   assert.match(formatted, /Ticket key: FPS-135835/);
   assert.match(formatted, /Comments:/);
   assert.match(formatted, /error\.log/);
+});
+
+test("formatJiraEvidenceForPrompt omits image-only attachments", () => {
+  const formatted = formatJiraEvidenceForPrompt({
+    key: "FPS-135835",
+    summary: "Ticket summary from Jira",
+    attachments: [
+      { filename: "Image-2023-10-07-13-22-37-863.png", mimeType: "image/png", size: 2048, excerpt: "" },
+      { filename: "server.log", mimeType: "text/plain", size: 120, excerpt: "ERROR failed request" }
+    ]
+  });
+
+  assert.match(formatted, /server\.log/);
+  assert.match(formatted, /ERROR failed request/);
+  assert.doesNotMatch(formatted, /Image-2023-10-07-13-22-37-863\.png/);
+  assert.doesNotMatch(formatted, /image\/png/);
+});
+
+test("Jira 401 JSON errors are converted to plain English", () => {
+  const message = formatJiraApiError({
+    statusCode: 401,
+    body: Buffer.from(JSON.stringify({
+      errorMessages: ["You are not authenticated."],
+      errors: {}
+    }))
+  }, "Failed to fetch Jira issue FPS-135835.");
+
+  assert.equal(
+    message,
+    "Jira authentication failed. The Jira token may be expired or invalid. Update the Jira personal access token and try again."
+  );
+  assert.doesNotMatch(message, /^\{/);
+});
+
+test("extractZipAttachmentExcerpt extracts important zip evidence with tight context", () => {
+  const zip = new AdmZip();
+  zip.addFile("logs/error.log", Buffer.from([
+    "startup line",
+    "request before incident",
+    "ERROR NullReferenceException while posting check",
+    "at Micros.CheckPosting.Save()",
+    "request after incident",
+    "unrelated trailing line"
+  ].join("\n"), "utf8"));
+  zip.addFile("src/Foo.cs", Buffer.from([
+    "public class Foo {}",
+    "throw new InvalidOperationException();",
+    "return;"
+  ].join("\n"), "utf8"));
+  zip.addFile("bin/image.png", Buffer.from([0, 1, 2, 3]));
+
+  const excerpt = extractZipAttachmentExcerpt(zip.toBuffer(), "evidence.zip");
+
+  assert.match(excerpt, /evidence\.zip \/ logs\/error\.log around line 2/);
+  assert.match(excerpt, /request before incident/);
+  assert.match(excerpt, /ERROR NullReferenceException while posting check/);
+  assert.match(excerpt, /at Micros\.CheckPosting\.Save\(\)/);
+  assert.match(excerpt, /request after incident/);
+  assert.doesNotMatch(excerpt, /startup line/);
+  assert.doesNotMatch(excerpt, /unrelated trailing line/);
+  assert.match(excerpt, /evidence\.zip \/ src\/Foo\.cs around line 1/);
+  assert.match(excerpt, /throw new InvalidOperationException/);
+  assert.doesNotMatch(excerpt, /image\.png/);
+});
+
+test("extractZipAttachmentExcerpt captures important evidence after thirty thousand characters", () => {
+  const zip = new AdmZip();
+  zip.addFile("logs/late.log", Buffer.from([
+    "noise".repeat(7000),
+    "line before late event",
+    "FATAL timeout while calling Jira API",
+    "stack trace follows",
+    "at JiraClient.FetchIssue()"
+  ].join("\n"), "utf8"));
+
+  const excerpt = extractZipAttachmentExcerpt(zip.toBuffer(), "late.zip");
+
+  assert.match(excerpt, /late\.zip \/ logs\/late\.log around line 2/);
+  assert.match(excerpt, /line before late event/);
+  assert.match(excerpt, /FATAL timeout while calling Jira API/);
+  assert.match(excerpt, /stack trace follows/);
+  assert.match(excerpt, /at JiraClient\.FetchIssue\(\)/);
+});
+
+test("extractZipAttachmentExcerpt ignores normal MySQL timeout configuration lines", () => {
+  const zip = new AdmZip();
+  zip.addFile("logs/startup.log", Buffer.from([
+    "Alias [LOCALDB] Settings [DatabaseType = MySql",
+    "DatabaseServer = localhost",
+    "Timeout = 30",
+    "ReplaceViews = True",
+    "Testing connection to DB [LocalDb]",
+    "Exception connecting to DB [LocalDb]",
+    "MySqlException: Unknown database 'datastore'",
+    "at MySql.Data.MySqlClient.MySqlConnection.Open()",
+    "continuing startup"
+  ].join("\n"), "utf8"));
+
+  const excerpt = extractZipAttachmentExcerpt(zip.toBuffer(), "startup.zip");
+
+  assert.doesNotMatch(excerpt, /around line 1/);
+  assert.doesNotMatch(excerpt, /around line 3/);
+  assert.match(excerpt, /startup\.zip \/ logs\/startup\.log around line 5/);
+  assert.match(excerpt, /Testing connection to DB/);
+  assert.match(excerpt, /Exception connecting to DB/);
+  assert.match(excerpt, /MySqlException: Unknown database/);
+  assert.match(excerpt, /at MySql\.Data\.MySqlClient\.MySqlConnection\.Open/);
 });
 
 test("resolveTicketScopedMcpServers requires Jira MCP for Jira and suppresses it for BugDB", () => {

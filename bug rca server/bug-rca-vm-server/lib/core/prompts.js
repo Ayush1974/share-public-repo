@@ -3,6 +3,8 @@ const { APP_ROOT, DEFAULT_MODEL, PRODUCT_OPTIONS, SKILL_NAME } = require("./conf
 const { getDefaultPrompt } = require("./file-utils");
 const { isSyntheticIssueTitle, normalizeIssueTitleValue, normalizeTicketIdValue } = require("./parsing");
 const { normalizeTicketSource } = require("./ticket-routing");
+// Formats raw BugDB evidence into a clean text block for the AI prompt
+const { formatBugDbEvidence } = require("./bugdb-api");
 
 const EVIDENCE_FIRST_GUIDANCE = "Focus on comments, audit history, attachments, logs, and reproducible evidence before concluding RCA.";
 const LEGACY_PRODUCT_GENERIC_GUIDANCE = "legacy-product-generic-guidance";
@@ -14,6 +16,7 @@ const MAX_PROMPT_DESCRIPTION_LENGTH = 4000;
 const MAX_PROMPT_COMMENT_LENGTH = 1200;
 const MAX_PROMPT_ATTACHMENT_EXCERPT_LENGTH = 1200;
 const JIRA_HINT_FILE_PATTERN = /\b(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+\.(?:cs|csproj|config|cpp|cmd|bat|ps1|java|js|json|md|sql|ts|tsx|txt|xml|xaml|yaml|yml)\b/g;
+const IMAGE_ATTACHMENT_EXTENSIONS = new Set([".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"]);
 
 function slugifyProductKey(value, fallback = "product") {
   const normalized = String(value || "")
@@ -158,6 +161,10 @@ function normalizeRequest(payload) {
   const suppliedJiraEvidence = payload.jiraEvidence && typeof payload.jiraEvidence === "object"
     ? payload.jiraEvidence
     : null;
+  // BugDB evidence pre-fetched by the server before the run starts
+  const suppliedBugDbEvidence = payload.bugDbEvidence && typeof payload.bugDbEvidence === "object"
+    ? payload.bugDbEvidence
+    : null;
   const product = {
     ...productConfig,
     key: productConfig.key || slugifyProductKey(productFamily),
@@ -173,6 +180,7 @@ function normalizeRequest(payload) {
     issueTitle,
     bugDescription,
     jiraEvidence: ticketSource === "description" ? buildManualBugEvidence(bugDescription, issueTitle) : suppliedJiraEvidence,
+    bugDbEvidence: ticketSource === "bugdb" ? suppliedBugDbEvidence : null,
     workspace,
     version,
     model,
@@ -208,6 +216,26 @@ function formatPromptList(title, values = []) {
   }
 
   return `${title}: ${normalizedValues.join(", ")}`;
+}
+
+function isPromptZipAttachment(attachment) {
+  const filename = String(attachment?.filename || "").trim().toLowerCase();
+  const mimeType = String(attachment?.mimeType || "").trim().toLowerCase();
+  return filename.endsWith(".zip") || mimeType.includes("zip");
+}
+
+function isPromptImageAttachment(attachment) {
+  const filename = String(attachment?.filename || "").trim().toLowerCase();
+  const mimeType = String(attachment?.mimeType || "").trim().toLowerCase();
+  const extensionMatch = filename.match(/\.[^.]+$/);
+  return mimeType.startsWith("image/")
+    || IMAGE_ATTACHMENT_EXTENSIONS.has(extensionMatch ? extensionMatch[0] : "");
+}
+
+function getPromptAttachments(jiraEvidence = null) {
+  return Array.isArray(jiraEvidence?.attachments)
+    ? jiraEvidence.attachments.filter((attachment) => !isPromptImageAttachment(attachment))
+    : [];
 }
 
 function formatJiraEvidenceForPrompt(jiraEvidence = null) {
@@ -253,7 +281,7 @@ function formatJiraEvidenceForPrompt(jiraEvidence = null) {
     }
   }
 
-  const attachments = Array.isArray(jiraEvidence.attachments) ? jiraEvidence.attachments : [];
+  const attachments = getPromptAttachments(jiraEvidence);
   if (attachments.length) {
     lines.push("", "Attachments:");
     for (const attachment of attachments) {
@@ -263,7 +291,9 @@ function formatJiraEvidenceForPrompt(jiraEvidence = null) {
         Number(attachment?.size || 0) ? `${attachment.size} bytes` : ""
       ].filter(Boolean);
       lines.push(`- ${parts.join(" | ")}`);
-      const excerpt = truncatePromptText(attachment?.excerpt || "", MAX_PROMPT_ATTACHMENT_EXCERPT_LENGTH);
+      const excerpt = isPromptZipAttachment(attachment)
+        ? String(attachment?.excerpt || "").trim()
+        : truncatePromptText(attachment?.excerpt || "", MAX_PROMPT_ATTACHMENT_EXCERPT_LENGTH);
       if (excerpt) {
         lines.push(excerpt);
       }
@@ -284,12 +314,10 @@ function collectJiraEvidenceText(jiraEvidence = null) {
     ...(Array.isArray(jiraEvidence.comments)
       ? jiraEvidence.comments.map((comment) => comment?.body || "")
       : []),
-    ...(Array.isArray(jiraEvidence.attachments)
-      ? jiraEvidence.attachments.flatMap((attachment) => [
+    ...(getPromptAttachments(jiraEvidence).flatMap((attachment) => [
         attachment?.filename || "",
         attachment?.excerpt || ""
-      ])
-      : [])
+      ]))
   ];
 
   return parts
@@ -465,11 +493,25 @@ function buildAnalysisPrompt(request, previousSession) {
       prefix.push(`Bug Description Investigation Hints:\n${descriptionHints.map((hint) => `- ${hint}`).join("\n")}`);
     }
   } else {
-    prefix.push(
-      `This ticket is BugDB-backed. Use the packaged references folder as the BugDB workflow path: \`${PACKAGED_REFERENCES_ROOT}\`.`,
-      "Within the run workspace, prefer `./references/BUGINTWFLOW.md`, `./references/.clinerules`, and `./references/generate-memory-bank-FINAL.md` when present.",
-      "Do not use Jira MCP as BugDB evidence. If BugDB facts are unavailable beyond the packaged workflow references, say that explicitly instead of inventing Jira-backed details."
-    );
+    if (request.bugDbEvidence) {
+      // Server already fetched live BugDB data — inject it directly into the prompt
+      prefix.push(
+        "This ticket is BugDB-backed. Use the prefetched BugDB REST API evidence in this prompt as the required factual source for this run.",
+        "Do not try BugDB MCP or Jira MCP in this run. The server already fetched the BugDB bug details directly before starting Codex.",
+        "If the prefetched BugDB evidence is incomplete, call that out explicitly instead of inventing missing bug facts."
+      );
+      const bugDbEvidenceBlock = formatBugDbEvidence(request.bugDbEvidence);
+      if (bugDbEvidenceBlock) {
+        prefix.push(`Prefetched BugDB Evidence:\n${bugDbEvidenceBlock}`);
+      }
+    } else {
+      // No live data — fall back to packaged reference files in the workspace
+      prefix.push(
+        `This ticket is BugDB-backed. Use the packaged references folder as the BugDB workflow path: \`${PACKAGED_REFERENCES_ROOT}\`.`,
+        "Within the run workspace, prefer `./references/BUGINTWFLOW.md`, `./references/.clinerules`, and `./references/generate-memory-bank-FINAL.md` when present.",
+        "Do not use Jira MCP as BugDB evidence. If BugDB facts are unavailable beyond the packaged workflow references, say that explicitly instead of inventing Jira-backed details."
+      );
+    }
   }
 
   if (request.ticketId) {

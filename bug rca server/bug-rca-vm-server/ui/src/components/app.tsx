@@ -43,6 +43,12 @@ type AuthUser = {
   username?: string;
 };
 
+type ActiveUser = {
+  name: string;
+  username?: string;
+  lastSeen?: number;
+};
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
@@ -58,10 +64,13 @@ type SessionHistoryItem = {
   request?: {
     displayName?: string;
     ticketId?: string;
+    ticketSource?: string;
+    bugDescription?: string;
     issueTitle?: string;
     derivedIssueTitle?: string;
     product?: string;
     productLabel?: string;
+    workspace?: string;
   };
   summary?: {
     displayName?: string;
@@ -81,6 +90,7 @@ type Props = Readonly<{
 const PRODUCT_GENERIC_GUIDANCE = "Keep the RCA specific to the selected Jira/BugDB ticket, its exact symptom, and the selected Oracle Restaurants product. Do not drift into generic product guidance.";
 const DEFAULT_LOCAL_AGENT_BASE_URL = "http://127.0.0.1:3210";
 const LOCAL_AGENT_RECONNECT_MS = 3000;
+const LOCAL_AGENT_DISCONNECTED_NOTICE = "Local client agent is not connected. Start the local client agent to use Developer mode.";
 const EMPTY_LOCAL_AGENT_STATUS: LocalAgentStatus = {
   connected: false,
   host: "",
@@ -186,6 +196,53 @@ function compactText(value: unknown, limit = 220) {
   return normalized.length > limit ? `${normalized.slice(0, limit - 1)}...` : normalized;
 }
 
+function formatErrorMessage(value: unknown): string {
+  const raw = value instanceof Error ? value.message : String(value || "");
+  const normalized = raw.trim();
+  if (!normalized) {
+    return "The request failed. Please try again.";
+  }
+
+  try {
+    const parsed = JSON.parse(normalized);
+    const jiraMessages = [
+      ...(Array.isArray(parsed.errorMessages) ? parsed.errorMessages : []),
+      ...(parsed.errors && typeof parsed.errors === "object" ? Object.values(parsed.errors) : [])
+    ].map((entry) => String(entry || "").trim()).filter(Boolean);
+    if (jiraMessages.some((message) => /issue does not exist|issue not found/i.test(message))) {
+      return "Jira issue was not found. Check the Jira number and confirm you have access to it.";
+    }
+    if (jiraMessages.length) {
+      return jiraMessages.join(" ");
+    }
+    const message = parsed.error || parsed.message || parsed.detail || parsed.errorMessage;
+    if (message) {
+      return formatErrorMessage(message);
+    }
+  } catch {
+    // The message is already plain text.
+  }
+
+  const jsonStart = normalized.indexOf("{");
+  if (jsonStart > 0 && normalized.endsWith("}")) {
+    const prefix = normalized.slice(0, jsonStart).trimEnd();
+    const formatted: string = formatErrorMessage(normalized.slice(jsonStart));
+    if (formatted && formatted !== normalized.slice(jsonStart)) {
+      if (/HTTP\s+404/i.test(prefix) && /jira issue was not found|issue does not exist|issue not found/i.test(formatted)) {
+        const issueMatch = prefix.match(/Jira issue\s+([A-Za-z0-9_-]+)/i);
+        const issueLabel = issueMatch?.[1] ? ` ${issueMatch[1]}` : "";
+        return `Jira issue${issueLabel} was not found. Check the Jira number and confirm you have access to it.`;
+      }
+      return `${prefix} ${formatted}`.trim();
+    }
+  }
+
+  return normalized
+    .replace(/\s+/g, " ")
+    .replace(/^Error:\s*/i, "")
+    .trim();
+}
+
 async function fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(url, {
     ...options,
@@ -196,15 +253,7 @@ async function fetchJson<T>(url: string, options: RequestInit = {}): Promise<T> 
   });
   const body = await response.text();
   if (!response.ok) {
-    try {
-      const parsed = JSON.parse(body);
-      throw new Error(parsed.error || parsed.message || body || `HTTP ${response.status}`);
-    } catch (error) {
-      if (error instanceof Error && error.message !== body) {
-        throw error;
-      }
-      throw new Error(body || `HTTP ${response.status}`);
-    }
+    throw new Error(formatErrorMessage(body || `HTTP ${response.status}`));
   }
   return body ? JSON.parse(body) : {} as T;
 }
@@ -655,8 +704,35 @@ function buildAdvancedProposedDiffBlock(proposedDiff: string) {
   return [
     "- Note: Proposed only; not applied or verified in this RCA-only run.",
     "",
-    trimRcaBlock(text, 220, 14000)
+    ensureFencedBlock(trimRcaBlock(text, 220, 14000), "diff")
   ].join("\n");
+}
+
+function filterAttachmentDisplayText(value: string) {
+  return cleanRcaField(value)
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => {
+      const normalized = line.trim();
+      if (!normalized) {
+        return true;
+      }
+      return !/\b[\w .()_-]+\.(?:bmp|gif|jpe?g|png|svg|webp)\b/i.test(normalized)
+        && !/\b(?:content was not included|was not fetched|not fetched|not included in the prompt|not included in prompt)\b/i.test(normalized)
+        && !/\b(?:ignored|skipped)\b.*\b(?:image|screenshot|video|media)\b/i.test(normalized)
+        && !/\b(?:image-only|screenshot-only|video-only|media-only)\b/i.test(normalized)
+        && !/\b(?:no|none|not)\b.*\b(?:attachment evidence|attachments?)\b.*\b(?:available|provided|included|fetched|present)\b/i.test(normalized);
+    })
+    .join("\n")
+    .trim();
+}
+
+function normalizeDisplayedSectionBody(heading: string, body: string) {
+  const normalizedHeading = normalizeSectionName(heading);
+  if (normalizedHeading === "attachment evidence" || normalizedHeading === "attachments") {
+    return filterAttachmentDisplayText(body);
+  }
+  return body.trim();
 }
 
 function pickAdvancedSection(sections: Record<string, string>, finalSections: Record<string, string>, name: string) {
@@ -776,6 +852,9 @@ function buildDefaultStepByStepSolution(payload: any, fields: Record<string, str
 }
 
 function normalizeAdvancedFieldBody(field: string, value: string) {
+  if (field === "Attachment Evidence" || field === "Attachments") {
+    return filterAttachmentDisplayText(value);
+  }
   if (field === "Proposed Diff") {
     return buildAdvancedProposedDiffBlock(value);
   }
@@ -917,7 +996,7 @@ function parseRcaResultSections(value: string) {
 
   function flush() {
     if (activeHeading) {
-      const body = activeLines.join("\n").trim();
+      const body = normalizeDisplayedSectionBody(activeHeading, activeLines.join("\n"));
       const previous = sections[sections.length - 1];
       if (body && previous && normalizeSectionName(previous.heading) === normalizeSectionName(activeHeading)) {
         previous.body = [previous.body, body].filter(Boolean).join("\n\n");
@@ -1105,17 +1184,20 @@ function summarizeSearchOutput(value: string) {
 
 function renderLiveLine(text: string) {
   const displayText = collapseRepeatedLiveFileRefs(text);
-  const kind = /^RCA successful:/i.test(text)
-    ? "success"
-    : /^RCA failed:/i.test(text)
-      ? "error"
-      : /^RCA stopped:/i.test(text)
-        ? "warning"
-        : /^warning:|^stderr:/i.test(text)
+  const isLocalAgentWarning = text.includes(LOCAL_AGENT_DISCONNECTED_NOTICE);
+  const kind = isLocalAgentWarning
+    ? "warning local-agent-warning"
+    : /^RCA successful:/i.test(text)
+      ? "success"
+      : /^RCA failed:/i.test(text)
+        ? "error"
+        : /^RCA stopped:/i.test(text)
           ? "warning"
-          : isCommandLikeLine(text)
-            ? "command"
-            : "";
+          : /^warning:|^stderr:/i.test(text)
+            ? "warning"
+            : isCommandLikeLine(text)
+              ? "command"
+              : "";
   return (
     <p class={`live-output-line ${kind}`}>
       {renderInlineCode(displayText)}
@@ -1124,7 +1206,9 @@ function renderLiveLine(text: string) {
 }
 
 function shouldSuppressLiveLine(text: string) {
-  return /\bNo stdout or stderr has arrived for\b/i.test(String(text || ""));
+  const normalized = String(text || "").trim();
+  return /\bNo stdout or stderr has arrived for\b/i.test(normalized)
+    || /^item\.complete/i.test(normalized);
 }
 
 function formatSessionHistoryTitle(session: SessionHistoryItem) {
@@ -1148,7 +1232,7 @@ function normalizeRunState(value: string): RunState {
   if (normalized === "running") {
     return "running";
   }
-  if (normalized === "cancelled" || normalized === "stopped") {
+  if (normalized === "cancelled" || normalized === "stopped" || normalized === "interrupted") {
     return "stopped";
   }
   if (normalized === "failed") {
@@ -1311,6 +1395,11 @@ export const App = registerCustomElement(
     const [currentSessionId, setCurrentSessionId] = useState("");
     const [isLoadingConfig, setIsLoadingConfig] = useState(true);
     const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
+    const [activeUsersData, setActiveUsersData] = useState<{ count: number; users: ActiveUser[]; open: boolean }>({
+      count: 0,
+      users: [],
+      open: false
+    });
     const controllerRef = useRef<AbortController | null>(null);
     const liveOutputRef = useRef<HTMLDivElement>(null);
     const endNoticeShownRef = useRef(false);
@@ -1322,9 +1411,9 @@ export const App = registerCustomElement(
       ? folderPath.trim()
       : selectedProductConfig?.defaultWorkspace || "";
     const isDescriptionTicket = ticketType === "description";
-    const ticketSourceLabel = isDescriptionTicket ? "Problem Statement" : "Jira";
-    const ticketInputLabel = isDescriptionTicket ? "Problem Statement" : "Jira Number";
-    const ticketPlaceholder = "FPS-137892";
+    const ticketSourceLabel = isDescriptionTicket ? "Problem Statement" : ticketType === "bugdb" ? "BugDB" : "Jira";
+    const ticketInputLabel = isDescriptionTicket ? "Problem Statement" : ticketType === "bugdb" ? "BugDB Number" : "Jira Number";
+    const ticketPlaceholder = ticketType === "bugdb" ? "38884123" : "FPS-137892";
     const ticketReady = isDescriptionTicket ? Boolean(bugDescription.trim()) : Boolean(ticketId.trim());
     const developerAgentReady = !developerMode || localAgentStatus.connected;
     const canRun = ticketReady && Boolean(workspace) && developerAgentReady && runState !== "running";
@@ -1340,6 +1429,7 @@ export const App = registerCustomElement(
               ? "Please select a source before starting RCA."
               : "";
     const advancedEnabled = runState === "completed" || Boolean(advancedAnalysis);
+    const runButtonLabel = selectedHistoryId && runState !== "running" ? "Re Run" : "Start RCA";
     const signedInLabel = authUser?.displayName || authUser?.email || authUser?.username || userLogin;
     const contextLines = useMemo(() => {
       const sourceMode = developerMode ? "Developer Mode" : "Product Mode";
@@ -1381,10 +1471,51 @@ export const App = registerCustomElement(
     }, [developerMode, localAgentStatus.connected]);
 
     useEffect(() => {
+      setLiveOutput((lines) => {
+        const withoutNotice = lines.filter((line) => line !== LOCAL_AGENT_DISCONNECTED_NOTICE);
+        if (developerMode && !localAgentStatus.connected) {
+          return [...withoutNotice, LOCAL_AGENT_DISCONNECTED_NOTICE].slice(-500);
+        }
+        return withoutNotice;
+      });
+    }, [developerMode, localAgentStatus.connected]);
+
+    useEffect(() => {
       if (liveOutputRef.current) {
         liveOutputRef.current.scrollTop = liveOutputRef.current.scrollHeight;
       }
     }, [liveOutput]);
+
+    useEffect(() => {
+      function sendHeartbeat() {
+        fetchJson("/api/heartbeat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        }).catch(() => {});
+      }
+
+      function fetchActiveUsers() {
+        fetchJson<{ count?: number; users?: ActiveUser[] }>("/api/active-users")
+          .then((data) => {
+            setActiveUsersData((previous) => ({
+              ...previous,
+              count: data.count || 0,
+              users: Array.isArray(data.users) ? data.users : []
+            }));
+          })
+          .catch(() => {});
+      }
+
+      sendHeartbeat();
+      fetchActiveUsers();
+      const heartbeatTimer = window.setInterval(sendHeartbeat, 30000);
+      const usersTimer = window.setInterval(fetchActiveUsers, 30000);
+      return () => {
+        window.clearInterval(heartbeatTimer);
+        window.clearInterval(usersTimer);
+      };
+    }, []);
 
     async function loadInitialState() {
       setIsLoadingConfig(true);
@@ -1473,6 +1604,7 @@ export const App = registerCustomElement(
       try {
         const session = await fetchJson<any>(`/api/sessions/${encodeURIComponent(sessionId)}`);
         const output = session?.output || {};
+        const request = session?.request || {};
         const liveLines = String(output.liveText || "")
           .replace(/\r\n/g, "\n")
           .split("\n")
@@ -1486,6 +1618,26 @@ export const App = registerCustomElement(
         setRunState(normalizeRunState(session.status));
         setStatusText(session.status ? String(session.status) : "Loaded");
         setActiveView("workspace");
+        const nextTicketType = request.ticketSource === "bugdb"
+          ? "bugdb"
+          : request.ticketSource === "description"
+            ? "description"
+            : "jira";
+        setTicketType(nextTicketType);
+        if (nextTicketType === "description") {
+          setBugDescription(String(request.bugDescription || ""));
+          setTicketId("");
+        } else {
+          setTicketId(String(request.ticketId || ""));
+          setBugDescription("");
+        }
+        if (request.product && products.some((product) => product.key === request.product)) {
+          setDeveloperMode(false);
+          setSelectedProduct(request.product);
+        } else if (request.workspace) {
+          setDeveloperMode(true);
+          setFolderPath(String(request.workspace || ""));
+        }
       } catch (error) {
         appendLive(`History load failed: ${compactText((error as Error).message, 180)}`);
       }
@@ -1542,7 +1694,7 @@ export const App = registerCustomElement(
       if (shouldSuppressLiveLine(text)) {
         return;
       }
-      setLiveOutput((lines) => [...lines, text].slice(-500));
+      setLiveOutput((lines) => [...lines, formatErrorMessage(text)].slice(-500));
     }
 
     async function stopRun() {
@@ -1568,7 +1720,7 @@ export const App = registerCustomElement(
     async function browseWorkspace() {
       if (developerMode && !localAgentStatus.connected) {
         await loadLocalAgentStatus();
-        appendLive("Browse failed: local client agent is not connected on your machine.");
+        appendLive(`Browse failed: ${LOCAL_AGENT_DISCONNECTED_NOTICE}`);
         return;
       }
       setIsBrowsingWorkspace(true);
@@ -1617,15 +1769,16 @@ export const App = registerCustomElement(
 
       try {
         let prefetchedTicketEvidence: any = null;
-        if (developerMode && ticketType === "jira") {
-          appendLive(`Fetching Jira evidence for ${ticketId.trim()}`);
-          prefetchedTicketEvidence = await fetchJson<any>("/api/ticket-evidence", {
+        if (ticketType === "jira" || ticketType === "bugdb") {
+          appendLive(`Fetching ${ticketType === "bugdb" ? "BugDB" : "Jira"} evidence for ${ticketId.trim()}`);
+          const evidenceUrl = "/api/ticket-evidence";
+          prefetchedTicketEvidence = await fetchJson<any>(evidenceUrl, {
             method: "POST",
             headers: {
               "Content-Type": "application/json"
             },
             body: JSON.stringify({
-              ticketSource: "jira",
+              ticketSource: ticketType,
               ticketId: ticketId.trim()
             })
           });
@@ -1649,6 +1802,7 @@ export const App = registerCustomElement(
             bugDescription: isDescriptionTicket ? descriptionText : "",
             issueTitle: prefetchedTicketEvidence?.issueTitle || "",
             jiraEvidence: prefetchedTicketEvidence?.jiraEvidence || null,
+            bugDbEvidence: prefetchedTicketEvidence?.bugDbEvidence || null,
             version: "",
             model: "",
             extraInstructions: PRODUCT_GENERIC_GUIDANCE
@@ -1683,8 +1837,8 @@ export const App = registerCustomElement(
         }
         setRunState("failed");
         setStatusText("Failed");
-        appendLive(`RCA failed: ${(error as Error).message}`);
-        addChat("assistant", `The RCA run failed: ${compactText((error as Error).message, 180)}`);
+        appendLive(`RCA failed: ${formatErrorMessage(error)}`);
+        addChat("assistant", `The RCA run failed: ${compactText(formatErrorMessage(error), 180)}`);
       } finally {
         controllerRef.current = null;
       }
@@ -1736,6 +1890,10 @@ export const App = registerCustomElement(
             ? `Support lookup failed: ${tool || "MCP tool"} ${item.error || ""}`.trim()
             : `Support lookup completed: ${tool || "MCP tool"}`
           );
+          return;
+        }
+
+        if (eventType === "item.completed") {
           return;
         }
 
@@ -1795,6 +1953,7 @@ export const App = registerCustomElement(
         const finalMessage = payload.message || payload.session?.output?.finalMessage || "";
         const failureDetail = payload.stderr || payload.session?.output?.stderr || payload.error || "";
         const completed = payload.session?.status === "completed";
+        const stopped = ["cancelled", "stopped", "interrupted"].includes(String(payload.session?.status || "").toLowerCase());
         const summary = buildCompressedRcaResult(payload);
         if (failureDetail) {
           lastFailureDetailRef.current = String(failureDetail);
@@ -1807,18 +1966,28 @@ export const App = registerCustomElement(
           summary
           || finalMessage
           || failureDetail
-          || (completed ? "RCA completed. Open Advanced Analysis for the full output." : "RCA failed. Check Live Output for the failure detail.")
+          || (completed
+            ? "RCA completed. Open Advanced Analysis for the full output."
+            : stopped
+              ? "RCA stopped: the active run was cancelled before completion."
+              : "RCA failed. Check Live Output for the failure detail.")
         );
-        setRunState(completed ? "completed" : "failed");
-        setStatusText(completed ? "Completed" : "Failed");
+        setRunState(completed ? "completed" : stopped ? "stopped" : "failed");
+        setStatusText(completed ? "Completed" : stopped ? "Stopped" : "Failed");
         if (!endNoticeShownRef.current) {
           appendLive(completed
             ? "RCA successful: check RCA Result for the summary."
-            : `RCA failed: ${compactText(failureDetail || finalMessage || "The run ended before a completed RCA was produced.", 320)}`
+            : stopped
+              ? "RCA stopped: the active run was cancelled before completion."
+              : `RCA failed: ${compactText(failureDetail || finalMessage || "The run ended before a completed RCA was produced.", 320)}`
           );
           endNoticeShownRef.current = true;
         }
-        addChat("assistant", completed ? "RCA completed. The summary is ready." : "The RCA run failed. Check Live Output for the failure detail.");
+        addChat("assistant", completed
+          ? "RCA completed. The summary is ready."
+          : stopped
+            ? "The RCA run was stopped."
+            : "The RCA run failed. Check Live Output for the failure detail.");
         loadSessionHistory();
         return;
       }
@@ -1857,8 +2026,29 @@ export const App = registerCustomElement(
               <strong>{signedInLabel}</strong>
             </div>
             <div class={`status-chip ${runtime.connected ? "is-ok" : "is-bad"}`}>
-              <span>Agent</span>
+              <span>Server Agent</span>
               <strong>{isLoadingConfig ? "Checking" : runtime.connected ? "Connected" : "Offline"}</strong>
+            </div>
+            <div
+              class={`status-chip active-users-chip ${activeUsersData.open ? "is-open" : ""}`}
+              title="Click to see who is online"
+              onClick={() => setActiveUsersData((previous) => ({ ...previous, open: !previous.open }))}
+            >
+              <span>Live</span>
+              <strong>{activeUsersData.count} online</strong>
+              {activeUsersData.open ? (
+                <div class="active-users-dropdown" onClick={(event) => event.stopPropagation()}>
+                  <div class="active-users-dropdown-title">Users online now</div>
+                  {activeUsersData.users.length ? activeUsersData.users.map((user) => (
+                    <div class="active-users-item">
+                      <span class="active-users-dot"></span>
+                      <span>{user.name || user.username || "Unknown"}</span>
+                    </div>
+                  )) : (
+                    <div class="active-users-empty">No users detected yet</div>
+                  )}
+                </div>
+              ) : null}
             </div>
             <a class="status-chip signout-button" href="/auth/logout">
               <span>Session</span>
@@ -1950,7 +2140,7 @@ export const App = registerCustomElement(
               {developerMode ? (
                 <p class={`workspace-note ${workspace && localAgentStatus.connected ? "" : "needs-attention"}`}>
                   {!localAgentStatus.connected
-                    ? "Local client agent is not connected on your machine."
+                    ? LOCAL_AGENT_DISCONNECTED_NOTICE
                     : workspace
                       ? "Developer workspace ready on your machine."
                       : "Choose the local code folder before starting RCA."}
@@ -1972,6 +2162,15 @@ export const App = registerCustomElement(
                     onChange={() => setTicketType("jira")}
                   />
                   Jira Number
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="ticketType"
+                    checked={ticketType === "bugdb"}
+                    onChange={() => setTicketType("bugdb")}
+                  />
+                  BugDB Number
                 </label>
                 <label>
                   <input
@@ -2007,8 +2206,8 @@ export const App = registerCustomElement(
               </label>
 
               <div class="button-row">
-                <button class="primary-button" type="button" disabled={!canRun} title={!canRun ? runDisabledReason : "Start RCA"} onClick={startRun}>
-                  Start RCA
+                <button class="primary-button" type="button" disabled={!canRun} title={!canRun ? runDisabledReason : runButtonLabel} onClick={startRun}>
+                  {runButtonLabel}
                 </button>
                 <button class="secondary-button" type="button" disabled={runState !== "running"} onClick={stopRun}>
                   Stop

@@ -3,6 +3,9 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
+const { loadEnvFile } = require("./lib/env-file");
+
+loadEnvFile({ baseDir: __dirname });
 
 const {
   APP_ROOT,
@@ -58,6 +61,10 @@ const {
   normalizeRequest
 } = require("./lib/prompts");
 const {
+  fetchDirectBugDbEvidence,
+  resolveBugDbConfig
+} = require("./lib/bugdb-api");
+const {
   createSessionId,
   currentArtifacts,
   deleteAllSessions,
@@ -93,6 +100,7 @@ const {
   handleBrokerAgentResult,
   handleBrokerConnectToken,
   isTrustedHostedUiRequest,
+  loadBrokerConfig,
   proxyBrokerApiRequest,
   startBrokerClient
 } = require("./lib/broker");
@@ -676,6 +684,122 @@ function validateRunRequest(request) {
   return "";
 }
 
+function readJsonRequest(req) {
+  return new Promise((resolve, reject) => {
+    parseRequestBody(req, (error, payload) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(payload || {});
+    });
+  });
+}
+
+function sanitizeBugDbEvidenceForPrompt(bugDbEvidence = {}) {
+  const { attachmentDirectory, ...safeEvidence } = bugDbEvidence || {};
+  const cleanErrors = Object.fromEntries(
+    Object.entries(safeEvidence.endpointErrors || {}).map(([k, v]) => [
+      k,
+      v ? (/HTTP 404/i.test(v) ? `${k}: not available (HTTP 404)` : String(v).split("\n")[0].slice(0, 200)) : ""
+    ])
+  );
+  const cleanAttachments = (safeEvidence.attachments || []).map(
+    ({ localPath, _skipped, ...attachment }) => attachment
+  );
+  return { ...safeEvidence, attachments: cleanAttachments, endpointErrors: cleanErrors };
+}
+
+function buildHostedApiUrl(apiPath) {
+  const config = loadBrokerConfig();
+  const baseUrl = String(config.uiBaseUrl || "").replace(/\/+$/, "");
+  if (!baseUrl) {
+    return "";
+  }
+
+  return `${baseUrl}${apiPath.startsWith("/") ? apiPath : `/${apiPath}`}`;
+}
+
+async function fetchHostedTicketEvidence(payload) {
+  const endpoint = buildHostedApiUrl("/api/ticket-evidence");
+  if (!endpoint) {
+    throw new Error("Hosted VM server URL is not configured on this client agent.");
+  }
+  if (typeof fetch !== "function") {
+    throw new Error("This Node.js runtime does not support fetch; upgrade Node.js or fetch evidence from the hosted UI.");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {}),
+      signal: controller.signal
+    });
+    const text = await response.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch (error) {
+      data = { error: text || response.statusText };
+    }
+
+    if (!response.ok) {
+      throw new Error(data.error || `Hosted VM evidence fetch failed with HTTP ${response.status}.`);
+    }
+
+    return data;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function handleTicketEvidence(req, res) {
+  let payload = null;
+  try {
+    payload = await readJsonRequest(req);
+  } catch (error) {
+    sendJson(res, error.message === "Request body too large" ? 413 : 400, { error: error.message || "Invalid JSON body" });
+    return;
+  }
+
+  const ticketSource = String(payload.ticketSource || payload.ticketType || "").trim().toLowerCase();
+  const ticketId = String(payload.ticketId || "").trim();
+  if (!["jira", "bugdb"].includes(ticketSource)) {
+    sendJson(res, 400, { error: "Only Jira and BugDB evidence prefetch are supported by the local client agent." });
+    return;
+  }
+  if (!ticketId) {
+    sendJson(res, 400, { error: ticketSource === "bugdb" ? "Bug number is required." : "Jira ticket ID is required." });
+    return;
+  }
+
+  try {
+    const hostedEvidence = await fetchHostedTicketEvidence(payload);
+    sendJson(res, 200, hostedEvidence);
+    return;
+  } catch (hostedError) {
+    if (ticketSource !== "bugdb" || !resolveBugDbConfig()) {
+      sendJson(res, 409, { error: hostedError.message || `Failed to fetch ${ticketSource.toUpperCase()} evidence from hosted VM server.` });
+      return;
+    }
+    try {
+      const bugDbEvidence = await fetchDirectBugDbEvidence(ticketId, { downloadAttachments: true, textOnly: true });
+      const safeEvidence = sanitizeBugDbEvidenceForPrompt(bugDbEvidence);
+      sendJson(res, 200, {
+        ticketSource: "bugdb",
+        ticketId: safeEvidence.bugNumber || ticketId,
+        issueTitle: safeEvidence.synopsis || "",
+        bugDbEvidence: safeEvidence
+      });
+    } catch (fallbackError) {
+      sendJson(res, 409, { error: fallbackError.message || `Failed to fetch BugDB bug ${ticketId}.` });
+    }
+  }
+}
+
 function handleRun(req, res) {
   parseRequestBody(req, (parseError, payload) => {
     if (parseError) {
@@ -789,6 +913,7 @@ function handleRun(req, res) {
         previousSessionId: request.previousSessionId,
         continueSession: request.continueSession,
         jiraEvidence: request.jiraEvidence,
+        bugDbEvidence: request.bugDbEvidence,
         prompt
       },
       command: {
@@ -1596,6 +1721,11 @@ async function handleRequest(req, res) {
 
   if (SERVE_AGENT_API && req.method === "POST" && pathname === "/api/run") {
     handleRun(req, res);
+    return;
+  }
+
+  if (SERVE_AGENT_API && req.method === "POST" && pathname === "/api/ticket-evidence") {
+    handleTicketEvidence(req, res);
     return;
   }
 

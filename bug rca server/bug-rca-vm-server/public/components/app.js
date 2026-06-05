@@ -14,6 +14,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
     const PRODUCT_GENERIC_GUIDANCE = "Keep the RCA specific to the selected Jira/BugDB ticket, its exact symptom, and the selected Oracle Restaurants product. Do not drift into generic product guidance.";
     const DEFAULT_LOCAL_AGENT_BASE_URL = "http://127.0.0.1:3210";
     const LOCAL_AGENT_RECONNECT_MS = 3000;
+    const LOCAL_AGENT_DISCONNECTED_NOTICE = "Local client agent is not connected. Start the local client agent to use Developer mode.";
     const EMPTY_LOCAL_AGENT_STATUS = {
         connected: false,
         host: "",
@@ -113,21 +114,55 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
         const normalized = normalizeText(value).replace(/\s+/g, " ");
         return normalized.length > limit ? `${normalized.slice(0, limit - 1)}...` : normalized;
     }
+    function formatErrorMessage(value) {
+        const raw = value instanceof Error ? value.message : String(value || "");
+        const normalized = raw.trim();
+        if (!normalized) {
+            return "The request failed. Please try again.";
+        }
+        try {
+            const parsed = JSON.parse(normalized);
+            const jiraMessages = [
+                ...(Array.isArray(parsed.errorMessages) ? parsed.errorMessages : []),
+                ...(parsed.errors && typeof parsed.errors === "object" ? Object.values(parsed.errors) : [])
+            ].map((entry) => String(entry || "").trim()).filter(Boolean);
+            if (jiraMessages.some((message) => /issue does not exist|issue not found/i.test(message))) {
+                return "Jira issue was not found. Check the Jira number and confirm you have access to it.";
+            }
+            if (jiraMessages.length) {
+                return jiraMessages.join(" ");
+            }
+            const message = parsed.error || parsed.message || parsed.detail || parsed.errorMessage;
+            if (message) {
+                return formatErrorMessage(message);
+            }
+        }
+        catch (_a) {
+        }
+        const jsonStart = normalized.indexOf("{");
+        if (jsonStart > 0 && normalized.endsWith("}")) {
+            const prefix = normalized.slice(0, jsonStart).trimEnd();
+            const formatted = formatErrorMessage(normalized.slice(jsonStart));
+            if (formatted && formatted !== normalized.slice(jsonStart)) {
+                if (/HTTP\s+404/i.test(prefix) && /jira issue was not found|issue does not exist|issue not found/i.test(formatted)) {
+                    const issueMatch = prefix.match(/Jira issue\s+([A-Za-z0-9_-]+)/i);
+                    const issueLabel = (issueMatch === null || issueMatch === void 0 ? void 0 : issueMatch[1]) ? ` ${issueMatch[1]}` : "";
+                    return `Jira issue${issueLabel} was not found. Check the Jira number and confirm you have access to it.`;
+                }
+                return `${prefix} ${formatted}`.trim();
+            }
+        }
+        return normalized
+            .replace(/\s+/g, " ")
+            .replace(/^Error:\s*/i, "")
+            .trim();
+    }
     function fetchJson(url_1) {
         return __awaiter(this, arguments, void 0, function* (url, options = {}) {
             const response = yield fetch(url, Object.assign(Object.assign({}, options), { headers: Object.assign({ Accept: "application/json" }, (options.headers || {})) }));
             const body = yield response.text();
             if (!response.ok) {
-                try {
-                    const parsed = JSON.parse(body);
-                    throw new Error(parsed.error || parsed.message || body || `HTTP ${response.status}`);
-                }
-                catch (error) {
-                    if (error instanceof Error && error.message !== body) {
-                        throw error;
-                    }
-                    throw new Error(body || `HTTP ${response.status}`);
-                }
+                throw new Error(formatErrorMessage(body || `HTTP ${response.status}`));
             }
             return body ? JSON.parse(body) : {};
         });
@@ -518,8 +553,33 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
         return [
             "- Note: Proposed only; not applied or verified in this RCA-only run.",
             "",
-            trimRcaBlock(text, 220, 14000)
+            ensureFencedBlock(trimRcaBlock(text, 220, 14000), "diff")
         ].join("\n");
+    }
+    function filterAttachmentDisplayText(value) {
+        return cleanRcaField(value)
+            .split("\n")
+            .map((line) => line.trimEnd())
+            .filter((line) => {
+            const normalized = line.trim();
+            if (!normalized) {
+                return true;
+            }
+            return !/\b[\w .()_-]+\.(?:bmp|gif|jpe?g|png|svg|webp)\b/i.test(normalized)
+                && !/\b(?:content was not included|was not fetched|not fetched|not included in the prompt|not included in prompt)\b/i.test(normalized)
+                && !/\b(?:ignored|skipped)\b.*\b(?:image|screenshot|video|media)\b/i.test(normalized)
+                && !/\b(?:image-only|screenshot-only|video-only|media-only)\b/i.test(normalized)
+                && !/\b(?:no|none|not)\b.*\b(?:attachment evidence|attachments?)\b.*\b(?:available|provided|included|fetched|present)\b/i.test(normalized);
+        })
+            .join("\n")
+            .trim();
+    }
+    function normalizeDisplayedSectionBody(heading, body) {
+        const normalizedHeading = normalizeSectionName(heading);
+        if (normalizedHeading === "attachment evidence" || normalizedHeading === "attachments") {
+            return filterAttachmentDisplayText(body);
+        }
+        return body.trim();
     }
     function pickAdvancedSection(sections, finalSections, name) {
         return cleanRcaField(firstPresent(sections[name], pickFinalSection(finalSections, name)));
@@ -619,6 +679,9 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
         ].join("\n");
     }
     function normalizeAdvancedFieldBody(field, value) {
+        if (field === "Attachment Evidence" || field === "Attachments") {
+            return filterAttachmentDisplayText(value);
+        }
         if (field === "Proposed Diff") {
             return buildAdvancedProposedDiffBlock(value);
         }
@@ -734,7 +797,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
         let inFence = false;
         function flush() {
             if (activeHeading) {
-                const body = activeLines.join("\n").trim();
+                const body = normalizeDisplayedSectionBody(activeHeading, activeLines.join("\n"));
                 const previous = sections[sections.length - 1];
                 if (body && previous && normalizeSectionName(previous.heading) === normalizeSectionName(activeHeading)) {
                     previous.body = [previous.body, body].filter(Boolean).join("\n\n");
@@ -900,21 +963,26 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
     }
     function renderLiveLine(text) {
         const displayText = collapseRepeatedLiveFileRefs(text);
-        const kind = /^RCA successful:/i.test(text)
-            ? "success"
-            : /^RCA failed:/i.test(text)
-                ? "error"
-                : /^RCA stopped:/i.test(text)
-                    ? "warning"
-                    : /^warning:|^stderr:/i.test(text)
+        const isLocalAgentWarning = text.includes(LOCAL_AGENT_DISCONNECTED_NOTICE);
+        const kind = isLocalAgentWarning
+            ? "warning local-agent-warning"
+            : /^RCA successful:/i.test(text)
+                ? "success"
+                : /^RCA failed:/i.test(text)
+                    ? "error"
+                    : /^RCA stopped:/i.test(text)
                         ? "warning"
-                        : isCommandLikeLine(text)
-                            ? "command"
-                            : "";
+                        : /^warning:|^stderr:/i.test(text)
+                            ? "warning"
+                            : isCommandLikeLine(text)
+                                ? "command"
+                                : "";
         return ((0, jsx_runtime_1.jsx)("p", { class: `live-output-line ${kind}`, children: renderInlineCode(displayText) }));
     }
     function shouldSuppressLiveLine(text) {
-        return /\bNo stdout or stderr has arrived for\b/i.test(String(text || ""));
+        const normalized = String(text || "").trim();
+        return /\bNo stdout or stderr has arrived for\b/i.test(normalized)
+            || /^item\.complete/i.test(normalized);
     }
     function formatSessionHistoryTitle(session) {
         var _a, _b, _c, _d, _e, _f, _g;
@@ -934,7 +1002,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
         if (normalized === "running") {
             return "running";
         }
-        if (normalized === "cancelled" || normalized === "stopped") {
+        if (normalized === "cancelled" || normalized === "stopped" || normalized === "interrupted") {
             return "stopped";
         }
         if (normalized === "failed") {
@@ -1067,19 +1135,24 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
         const [currentSessionId, setCurrentSessionId] = (0, hooks_1.useState)("");
         const [isLoadingConfig, setIsLoadingConfig] = (0, hooks_1.useState)(true);
         const [leftPanelCollapsed, setLeftPanelCollapsed] = (0, hooks_1.useState)(false);
-            const controllerRef = (0, hooks_1.useRef)(null);
-            const liveOutputRef = (0, hooks_1.useRef)(null);
-            const endNoticeShownRef = (0, hooks_1.useRef)(false);
-            const lastFailureDetailRef = (0, hooks_1.useRef)("");
+        const [activeUsersData, setActiveUsersData] = (0, hooks_1.useState)({
+            count: 0,
+            users: [],
+            open: false
+        });
+        const controllerRef = (0, hooks_1.useRef)(null);
+        const liveOutputRef = (0, hooks_1.useRef)(null);
+        const endNoticeShownRef = (0, hooks_1.useRef)(false);
+        const lastFailureDetailRef = (0, hooks_1.useRef)("");
         const products = (0, hooks_1.useMemo)(() => normalizeProducts(runtime.products || []), [runtime.products]);
         const selectedProductConfig = products.find((product) => product.key === selectedProduct) || products[0];
         const workspace = developerMode
             ? folderPath.trim()
             : (selectedProductConfig === null || selectedProductConfig === void 0 ? void 0 : selectedProductConfig.defaultWorkspace) || "";
         const isDescriptionTicket = ticketType === "description";
-        const ticketSourceLabel = isDescriptionTicket ? "Problem Statement" : "Jira";
-        const ticketInputLabel = isDescriptionTicket ? "Problem Statement" : "Jira Number";
-        const ticketPlaceholder = "FPS-137892";
+        const ticketSourceLabel = isDescriptionTicket ? "Problem Statement" : ticketType === "bugdb" ? "BugDB" : "Jira";
+        const ticketInputLabel = isDescriptionTicket ? "Problem Statement" : ticketType === "bugdb" ? "BugDB Number" : "Jira Number";
+        const ticketPlaceholder = ticketType === "bugdb" ? "38884123" : "FPS-137892";
         const ticketReady = isDescriptionTicket ? Boolean(bugDescription.trim()) : Boolean(ticketId.trim());
         const developerAgentReady = !developerMode || localAgentStatus.connected;
         const canRun = ticketReady && Boolean(workspace) && developerAgentReady && runState !== "running";
@@ -1095,6 +1168,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                             ? "Please select a source before starting RCA."
                             : "";
         const advancedEnabled = runState === "completed" || Boolean(advancedAnalysis);
+        const runButtonLabel = selectedHistoryId && runState !== "running" ? "Re Run" : "Start RCA";
         const signedInLabel = (authUser === null || authUser === void 0 ? void 0 : authUser.displayName) || (authUser === null || authUser === void 0 ? void 0 : authUser.email) || (authUser === null || authUser === void 0 ? void 0 : authUser.username) || userLogin;
         const contextLines = (0, hooks_1.useMemo)(() => {
             const sourceMode = developerMode ? "Developer Mode" : "Product Mode";
@@ -1133,10 +1207,43 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
             return () => window.clearInterval(timer);
         }, [developerMode, localAgentStatus.connected]);
         (0, hooks_1.useEffect)(() => {
+            setLiveOutput((lines) => {
+                const withoutNotice = lines.filter((line) => line !== LOCAL_AGENT_DISCONNECTED_NOTICE);
+                if (developerMode && !localAgentStatus.connected) {
+                    return [...withoutNotice, LOCAL_AGENT_DISCONNECTED_NOTICE].slice(-500);
+                }
+                return withoutNotice;
+            });
+        }, [developerMode, localAgentStatus.connected]);
+        (0, hooks_1.useEffect)(() => {
             if (liveOutputRef.current) {
                 liveOutputRef.current.scrollTop = liveOutputRef.current.scrollHeight;
             }
         }, [liveOutput]);
+        (0, hooks_1.useEffect)(() => {
+            function sendHeartbeat() {
+                fetchJson("/api/heartbeat", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({})
+                }).catch(() => { });
+            }
+            function fetchActiveUsers() {
+                fetchJson("/api/active-users")
+                    .then((data) => {
+                    setActiveUsersData((previous) => (Object.assign(Object.assign({}, previous), { count: data.count || 0, users: Array.isArray(data.users) ? data.users : [] })));
+                })
+                    .catch(() => { });
+            }
+            sendHeartbeat();
+            fetchActiveUsers();
+            const heartbeatTimer = window.setInterval(sendHeartbeat, 30000);
+            const usersTimer = window.setInterval(fetchActiveUsers, 30000);
+            return () => {
+                window.clearInterval(heartbeatTimer);
+                window.clearInterval(usersTimer);
+            };
+        }, []);
         function loadInitialState() {
             return __awaiter(this, void 0, void 0, function* () {
                 setIsLoadingConfig(true);
@@ -1233,6 +1340,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                 try {
                     const session = yield fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}`);
                     const output = (session === null || session === void 0 ? void 0 : session.output) || {};
+                    const request = (session === null || session === void 0 ? void 0 : session.request) || {};
                     const liveLines = String(output.liveText || "")
                         .replace(/\r\n/g, "\n")
                         .split("\n")
@@ -1246,6 +1354,28 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                     setRunState(normalizeRunState(session.status));
                     setStatusText(session.status ? String(session.status) : "Loaded");
                     setActiveView("workspace");
+                    const nextTicketType = request.ticketSource === "bugdb"
+                        ? "bugdb"
+                        : request.ticketSource === "description"
+                            ? "description"
+                            : "jira";
+                    setTicketType(nextTicketType);
+                    if (nextTicketType === "description") {
+                        setBugDescription(String(request.bugDescription || ""));
+                        setTicketId("");
+                    }
+                    else {
+                        setTicketId(String(request.ticketId || ""));
+                        setBugDescription("");
+                    }
+                    if (request.product && products.some((product) => product.key === request.product)) {
+                        setDeveloperMode(false);
+                        setSelectedProduct(request.product);
+                    }
+                    else if (request.workspace) {
+                        setDeveloperMode(true);
+                        setFolderPath(String(request.workspace || ""));
+                    }
                 }
                 catch (error) {
                     appendLive(`History load failed: ${compactText(error.message, 180)}`);
@@ -1304,7 +1434,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
             if (shouldSuppressLiveLine(text)) {
                 return;
             }
-            setLiveOutput((lines) => [...lines, text].slice(-500));
+            setLiveOutput((lines) => [...lines, formatErrorMessage(text)].slice(-500));
         }
         function stopRun() {
             return __awaiter(this, void 0, void 0, function* () {
@@ -1332,7 +1462,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
             return __awaiter(this, void 0, void 0, function* () {
                 if (developerMode && !localAgentStatus.connected) {
                     yield loadLocalAgentStatus();
-                    appendLive("Browse failed: local client agent is not connected on your machine.");
+                    appendLive(`Browse failed: ${LOCAL_AGENT_DISCONNECTED_NOTICE}`);
                     return;
                 }
                 setIsBrowsingWorkspace(true);
@@ -1382,15 +1512,16 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                 addChat("user", `${ticketLabel} RCA for ${productLabel}`);
                 try {
                     let prefetchedTicketEvidence = null;
-                    if (developerMode && ticketType === "jira") {
-                        appendLive(`Fetching Jira evidence for ${ticketId.trim()}`);
-                        prefetchedTicketEvidence = yield fetchJson("/api/ticket-evidence", {
+                    if (ticketType === "jira" || ticketType === "bugdb") {
+                        appendLive(`Fetching ${ticketType === "bugdb" ? "BugDB" : "Jira"} evidence for ${ticketId.trim()}`);
+                        const evidenceUrl = "/api/ticket-evidence";
+                        prefetchedTicketEvidence = yield fetchJson(evidenceUrl, {
                             method: "POST",
                             headers: {
                                 "Content-Type": "application/json"
                             },
                             body: JSON.stringify({
-                                ticketSource: "jira",
+                                ticketSource: ticketType,
                                 ticketId: ticketId.trim()
                             })
                         });
@@ -1414,6 +1545,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                             bugDescription: isDescriptionTicket ? descriptionText : "",
                             issueTitle: (prefetchedTicketEvidence === null || prefetchedTicketEvidence === void 0 ? void 0 : prefetchedTicketEvidence.issueTitle) || "",
                             jiraEvidence: (prefetchedTicketEvidence === null || prefetchedTicketEvidence === void 0 ? void 0 : prefetchedTicketEvidence.jiraEvidence) || null,
+                            bugDbEvidence: (prefetchedTicketEvidence === null || prefetchedTicketEvidence === void 0 ? void 0 : prefetchedTicketEvidence.bugDbEvidence) || null,
                             version: "",
                             model: "",
                             extraInstructions: PRODUCT_GENERIC_GUIDANCE
@@ -1446,8 +1578,8 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                     }
                     setRunState("failed");
                     setStatusText("Failed");
-                    appendLive(`RCA failed: ${error.message}`);
-                    addChat("assistant", `The RCA run failed: ${compactText(error.message, 180)}`);
+                    appendLive(`RCA failed: ${formatErrorMessage(error)}`);
+                    addChat("assistant", `The RCA run failed: ${compactText(formatErrorMessage(error), 180)}`);
                 }
                 finally {
                     controllerRef.current = null;
@@ -1455,7 +1587,7 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
             });
         }
         function handleStreamBlock(block) {
-            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l;
+            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m;
             const parsed = parseSseBlock(block);
             if (!parsed) {
                 return;
@@ -1497,6 +1629,9 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                     appendLive(item.status === "failed"
                         ? `Support lookup failed: ${tool || "MCP tool"} ${item.error || ""}`.trim()
                         : `Support lookup completed: ${tool || "MCP tool"}`);
+                    return;
+                }
+                if (eventType === "item.completed") {
                     return;
                 }
                 if (eventType === "ticket.preflight") {
@@ -1551,27 +1686,38 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                 const finalMessage = payload.message || ((_e = (_d = payload.session) === null || _d === void 0 ? void 0 : _d.output) === null || _e === void 0 ? void 0 : _e.finalMessage) || "";
                 const failureDetail = payload.stderr || ((_g = (_f = payload.session) === null || _f === void 0 ? void 0 : _f.output) === null || _g === void 0 ? void 0 : _g.stderr) || payload.error || "";
                 const completed = ((_h = payload.session) === null || _h === void 0 ? void 0 : _h.status) === "completed";
+                const stopped = ["cancelled", "stopped", "interrupted"].includes(String(((_j = payload.session) === null || _j === void 0 ? void 0 : _j.status) || "").toLowerCase());
                 const summary = buildCompressedRcaResult(payload);
                 if (failureDetail) {
                     lastFailureDetailRef.current = String(failureDetail);
                 }
-                if (payload.sessionId || ((_j = payload.session) === null || _j === void 0 ? void 0 : _j.id)) {
-                    setSelectedHistoryId(payload.sessionId || ((_k = payload.session) === null || _k === void 0 ? void 0 : _k.id) || "");
+                if (payload.sessionId || ((_k = payload.session) === null || _k === void 0 ? void 0 : _k.id)) {
+                    setSelectedHistoryId(payload.sessionId || ((_l = payload.session) === null || _l === void 0 ? void 0 : _l.id) || "");
                 }
                 setAdvancedAnalysis(completed ? (buildAdvancedAnalysis(payload) || finalMessage) : finalMessage);
                 setRcaResult(summary
                     || finalMessage
                     || failureDetail
-                    || (completed ? "RCA completed. Open Advanced Analysis for the full output." : "RCA failed. Check Live Output for the failure detail."));
-                setRunState(completed ? "completed" : "failed");
-                setStatusText(completed ? "Completed" : "Failed");
+                    || (completed
+                        ? "RCA completed. Open Advanced Analysis for the full output."
+                        : stopped
+                            ? "RCA stopped: the active run was cancelled before completion."
+                            : "RCA failed. Check Live Output for the failure detail."));
+                setRunState(completed ? "completed" : stopped ? "stopped" : "failed");
+                setStatusText(completed ? "Completed" : stopped ? "Stopped" : "Failed");
                 if (!endNoticeShownRef.current) {
                     appendLive(completed
                         ? "RCA successful: check RCA Result for the summary."
-                        : `RCA failed: ${compactText(failureDetail || finalMessage || "The run ended before a completed RCA was produced.", 320)}`);
+                        : stopped
+                            ? "RCA stopped: the active run was cancelled before completion."
+                            : `RCA failed: ${compactText(failureDetail || finalMessage || "The run ended before a completed RCA was produced.", 320)}`);
                     endNoticeShownRef.current = true;
                 }
-                addChat("assistant", completed ? "RCA completed. The summary is ready." : "The RCA run failed. Check Live Output for the failure detail.");
+                addChat("assistant", completed
+                    ? "RCA completed. The summary is ready."
+                    : stopped
+                        ? "The RCA run was stopped."
+                        : "The RCA run failed. Check Live Output for the failure detail.");
                 loadSessionHistory();
                 return;
             }
@@ -1586,19 +1732,19 @@ define(["require", "exports", "preact/jsx-runtime", "ojs/ojvcomponent", "preact/
                         ? "RCA successful: check RCA Result for the summary."
                         : stopped
                             ? "RCA stopped: the active run was cancelled before completion."
-                            : `RCA failed: ${compactText(failureDetail || `Process exited with code ${(_l = payload.code) !== null && _l !== void 0 ? _l : "unknown"}.`, 320)}`);
+                            : `RCA failed: ${compactText(failureDetail || `Process exited with code ${(_m = payload.code) !== null && _m !== void 0 ? _m : "unknown"}.`, 320)}`);
                     endNoticeShownRef.current = true;
                 }
             }
         }
-        return ((0, jsx_runtime_1.jsxs)("div", { class: "rca-app-shell", children: [(0, jsx_runtime_1.jsxs)("header", { class: "rca-topbar", children: [(0, jsx_runtime_1.jsxs)("div", { class: "rca-brand", children: [(0, jsx_runtime_1.jsx)("img", { src: "styles/images/oracle_logo.svg", alt: "Oracle" }), (0, jsx_runtime_1.jsxs)("div", { children: [(0, jsx_runtime_1.jsx)("h1", { children: appName }), (0, jsx_runtime_1.jsx)("p", { children: "Issue Investigation Tool" })] })] }), (0, jsx_runtime_1.jsxs)("div", { class: "rca-top-actions", children: [(0, jsx_runtime_1.jsxs)("div", { class: "status-chip user-chip", title: signedInLabel, children: [(0, jsx_runtime_1.jsx)("span", { children: "Signed in" }), (0, jsx_runtime_1.jsx)("strong", { children: signedInLabel })] }), (0, jsx_runtime_1.jsxs)("div", { class: `status-chip ${runtime.connected ? "is-ok" : "is-bad"}`, children: [(0, jsx_runtime_1.jsx)("span", { children: "Agent" }), (0, jsx_runtime_1.jsx)("strong", { children: isLoadingConfig ? "Checking" : runtime.connected ? "Connected" : "Offline" })] }), (0, jsx_runtime_1.jsxs)("a", { class: "status-chip signout-button", href: "/auth/logout", children: [(0, jsx_runtime_1.jsx)("span", { children: "Session" }), (0, jsx_runtime_1.jsx)("strong", { children: "Sign out" })] })] })] }), (0, jsx_runtime_1.jsxs)("main", { class: `rca-layout ${leftPanelCollapsed ? "left-collapsed" : ""}`, children: [leftPanelCollapsed ? ((0, jsx_runtime_1.jsx)("aside", { class: "collapsed-rail", "aria-label": "Open investigation panel", children: (0, jsx_runtime_1.jsxs)("button", { class: "rail-menu-button", type: "button", "aria-label": "Open investigation panel", title: "Open investigation panel", onClick: () => setLeftPanelCollapsed(false), children: [(0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {})] }) })) : null, (0, jsx_runtime_1.jsxs)("aside", { class: "control-panel", "aria-label": "Investigation controls and chat", "aria-hidden": leftPanelCollapsed ? "true" : "false", children: [(0, jsx_runtime_1.jsxs)("div", { class: "panel-command-bar", children: [(0, jsx_runtime_1.jsx)("div", { class: "panel-oracle-tile", "aria-label": "Oracle Restaurants RCA panel", children: (0, jsx_runtime_1.jsx)("span", { "aria-hidden": "true" }) }), (0, jsx_runtime_1.jsxs)("button", { class: "panel-collapse-button", type: "button", "aria-label": "Collapse investigation panel", title: "Collapse investigation panel", onClick: () => setLeftPanelCollapsed(true), children: [(0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {})] })] }), (0, jsx_runtime_1.jsxs)("section", { class: "control-card", children: [(0, jsx_runtime_1.jsxs)("div", { class: "section-heading", children: [(0, jsx_runtime_1.jsx)("span", { children: "Mode" }), (0, jsx_runtime_1.jsx)("strong", { children: "Source" })] }), (0, jsx_runtime_1.jsxs)("div", { class: "radio-row two-col", role: "radiogroup", "aria-label": "Developer mode", children: [(0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "developerMode", checked: !developerMode, onChange: () => setDeveloperMode(false) }), "Product"] }), (0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "developerMode", checked: developerMode, onChange: () => setDeveloperMode(true) }), "Developer"] })] }), !developerMode ? ((0, jsx_runtime_1.jsxs)("label", { class: "field-block", children: [(0, jsx_runtime_1.jsx)("span", { children: "Product name" }), (0, jsx_runtime_1.jsx)("select", { value: selectedProduct, onChange: (event) => setSelectedProduct(event.currentTarget.value), children: products.map((product) => ((0, jsx_runtime_1.jsx)("option", { value: product.key, children: product.label }))) })] })) : ((0, jsx_runtime_1.jsxs)("div", { class: "browse-workspace-block", children: [(0, jsx_runtime_1.jsx)("button", { class: "browse-button", type: "button", disabled: isBrowsingWorkspace || !localAgentStatus.connected, onClick: browseWorkspace, children: isBrowsingWorkspace ? "Opening..." : "Browse Code Folder" }), (0, jsx_runtime_1.jsx)("p", { class: `selected-path ${folderPath ? "" : "needs-attention"}`, children: folderPath || "No folder selected" })] })), developerMode ? ((0, jsx_runtime_1.jsx)("p", { class: `workspace-note ${workspace && localAgentStatus.connected ? "" : "needs-attention"}`, children: !localAgentStatus.connected
-                                                ? "Local client agent is not connected on your machine."
+        return ((0, jsx_runtime_1.jsxs)("div", { class: "rca-app-shell", children: [(0, jsx_runtime_1.jsxs)("header", { class: "rca-topbar", children: [(0, jsx_runtime_1.jsxs)("div", { class: "rca-brand", children: [(0, jsx_runtime_1.jsx)("img", { src: "styles/images/oracle_logo.svg", alt: "Oracle" }), (0, jsx_runtime_1.jsxs)("div", { children: [(0, jsx_runtime_1.jsx)("h1", { children: appName }), (0, jsx_runtime_1.jsx)("p", { children: "Issue Investigation Tool" })] })] }), (0, jsx_runtime_1.jsxs)("div", { class: "rca-top-actions", children: [(0, jsx_runtime_1.jsxs)("div", { class: "status-chip user-chip", title: signedInLabel, children: [(0, jsx_runtime_1.jsx)("span", { children: "Signed in" }), (0, jsx_runtime_1.jsx)("strong", { children: signedInLabel })] }), (0, jsx_runtime_1.jsxs)("div", { class: `status-chip ${runtime.connected ? "is-ok" : "is-bad"}`, children: [(0, jsx_runtime_1.jsx)("span", { children: "Server Agent" }), (0, jsx_runtime_1.jsx)("strong", { children: isLoadingConfig ? "Checking" : runtime.connected ? "Connected" : "Offline" })] }), (0, jsx_runtime_1.jsxs)("div", { class: `status-chip active-users-chip ${activeUsersData.open ? "is-open" : ""}`, title: "Click to see who is online", onClick: () => setActiveUsersData((previous) => (Object.assign(Object.assign({}, previous), { open: !previous.open }))), children: [(0, jsx_runtime_1.jsx)("span", { children: "Live" }), (0, jsx_runtime_1.jsxs)("strong", { children: [activeUsersData.count, " online"] }), activeUsersData.open ? ((0, jsx_runtime_1.jsxs)("div", { class: "active-users-dropdown", onClick: (event) => event.stopPropagation(), children: [(0, jsx_runtime_1.jsx)("div", { class: "active-users-dropdown-title", children: "Users online now" }), activeUsersData.users.length ? activeUsersData.users.map((user) => ((0, jsx_runtime_1.jsxs)("div", { class: "active-users-item", children: [(0, jsx_runtime_1.jsx)("span", { class: "active-users-dot" }), (0, jsx_runtime_1.jsx)("span", { children: user.name || user.username || "Unknown" })] }))) : ((0, jsx_runtime_1.jsx)("div", { class: "active-users-empty", children: "No users detected yet" }))] })) : null] }), (0, jsx_runtime_1.jsxs)("a", { class: "status-chip signout-button", href: "/auth/logout", children: [(0, jsx_runtime_1.jsx)("span", { children: "Session" }), (0, jsx_runtime_1.jsx)("strong", { children: "Sign out" })] })] })] }), (0, jsx_runtime_1.jsxs)("main", { class: `rca-layout ${leftPanelCollapsed ? "left-collapsed" : ""}`, children: [leftPanelCollapsed ? ((0, jsx_runtime_1.jsx)("aside", { class: "collapsed-rail", "aria-label": "Open investigation panel", children: (0, jsx_runtime_1.jsxs)("button", { class: "rail-menu-button", type: "button", "aria-label": "Open investigation panel", title: "Open investigation panel", onClick: () => setLeftPanelCollapsed(false), children: [(0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {})] }) })) : null, (0, jsx_runtime_1.jsxs)("aside", { class: "control-panel", "aria-label": "Investigation controls and chat", "aria-hidden": leftPanelCollapsed ? "true" : "false", children: [(0, jsx_runtime_1.jsxs)("div", { class: "panel-command-bar", children: [(0, jsx_runtime_1.jsx)("div", { class: "panel-oracle-tile", "aria-label": "Oracle Restaurants RCA panel", children: (0, jsx_runtime_1.jsx)("span", { "aria-hidden": "true" }) }), (0, jsx_runtime_1.jsxs)("button", { class: "panel-collapse-button", type: "button", "aria-label": "Collapse investigation panel", title: "Collapse investigation panel", onClick: () => setLeftPanelCollapsed(true), children: [(0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {}), (0, jsx_runtime_1.jsx)("span", {})] })] }), (0, jsx_runtime_1.jsxs)("section", { class: "control-card", children: [(0, jsx_runtime_1.jsxs)("div", { class: "section-heading", children: [(0, jsx_runtime_1.jsx)("span", { children: "Mode" }), (0, jsx_runtime_1.jsx)("strong", { children: "Source" })] }), (0, jsx_runtime_1.jsxs)("div", { class: "radio-row two-col", role: "radiogroup", "aria-label": "Developer mode", children: [(0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "developerMode", checked: !developerMode, onChange: () => setDeveloperMode(false) }), "Product"] }), (0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "developerMode", checked: developerMode, onChange: () => setDeveloperMode(true) }), "Developer"] })] }), !developerMode ? ((0, jsx_runtime_1.jsxs)("label", { class: "field-block", children: [(0, jsx_runtime_1.jsx)("span", { children: "Product name" }), (0, jsx_runtime_1.jsx)("select", { value: selectedProduct, onChange: (event) => setSelectedProduct(event.currentTarget.value), children: products.map((product) => ((0, jsx_runtime_1.jsx)("option", { value: product.key, children: product.label }))) })] })) : ((0, jsx_runtime_1.jsxs)("div", { class: "browse-workspace-block", children: [(0, jsx_runtime_1.jsx)("button", { class: "browse-button", type: "button", disabled: isBrowsingWorkspace || !localAgentStatus.connected, onClick: browseWorkspace, children: isBrowsingWorkspace ? "Opening..." : "Browse Code Folder" }), (0, jsx_runtime_1.jsx)("p", { class: `selected-path ${folderPath ? "" : "needs-attention"}`, children: folderPath || "No folder selected" })] })), developerMode ? ((0, jsx_runtime_1.jsx)("p", { class: `workspace-note ${workspace && localAgentStatus.connected ? "" : "needs-attention"}`, children: !localAgentStatus.connected
+                                                ? LOCAL_AGENT_DISCONNECTED_NOTICE
                                                 : workspace
                                                     ? "Developer workspace ready on your machine."
-                                                    : "Choose the local code folder before starting RCA." })) : null] }), (0, jsx_runtime_1.jsxs)("section", { class: "control-card", children: [(0, jsx_runtime_1.jsxs)("div", { class: "section-heading", children: [(0, jsx_runtime_1.jsx)("span", { children: "Ticket" }), (0, jsx_runtime_1.jsx)("strong", { children: "Bug Source" })] }), (0, jsx_runtime_1.jsxs)("div", { class: "radio-row", role: "radiogroup", "aria-label": "Ticket source", children: [(0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "ticketType", checked: ticketType === "jira", onChange: () => setTicketType("jira") }), "Jira Number"] }), (0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "ticketType", checked: ticketType === "description", onChange: () => setTicketType("description") }), "Problem Statement"] })] }), (0, jsx_runtime_1.jsxs)("label", { class: "field-block", children: [(0, jsx_runtime_1.jsx)("span", { children: ticketInputLabel }), isDescriptionTicket ? ((0, jsx_runtime_1.jsx)("textarea", { class: "bug-description-input", rows: 5, placeholder: "Problem Statement", value: bugDescription, onInput: (event) => setBugDescription(event.currentTarget.value) })) : ((0, jsx_runtime_1.jsx)("input", { value: ticketId, onInput: (event) => {
+                                                    : "Choose the local code folder before starting RCA." })) : null] }), (0, jsx_runtime_1.jsxs)("section", { class: "control-card", children: [(0, jsx_runtime_1.jsxs)("div", { class: "section-heading", children: [(0, jsx_runtime_1.jsx)("span", { children: "Ticket" }), (0, jsx_runtime_1.jsx)("strong", { children: "Bug Source" })] }), (0, jsx_runtime_1.jsxs)("div", { class: "radio-row", role: "radiogroup", "aria-label": "Ticket source", children: [(0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "ticketType", checked: ticketType === "jira", onChange: () => setTicketType("jira") }), "Jira Number"] }), (0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "ticketType", checked: ticketType === "bugdb", onChange: () => setTicketType("bugdb") }), "BugDB Number"] }), (0, jsx_runtime_1.jsxs)("label", { children: [(0, jsx_runtime_1.jsx)("input", { type: "radio", name: "ticketType", checked: ticketType === "description", onChange: () => setTicketType("description") }), "Problem Statement"] })] }), (0, jsx_runtime_1.jsxs)("label", { class: "field-block", children: [(0, jsx_runtime_1.jsx)("span", { children: ticketInputLabel }), isDescriptionTicket ? ((0, jsx_runtime_1.jsx)("textarea", { class: "bug-description-input", rows: 5, placeholder: "Problem Statement", value: bugDescription, onInput: (event) => setBugDescription(event.currentTarget.value) })) : ((0, jsx_runtime_1.jsx)("input", { value: ticketId, onInput: (event) => {
                                                         const value = event.currentTarget.value;
                                                         setTicketId(ticketType === "jira" ? value.toUpperCase() : value);
-                                                    }, placeholder: ticketPlaceholder }))] }), (0, jsx_runtime_1.jsxs)("div", { class: "button-row", children: [(0, jsx_runtime_1.jsx)("button", { class: "primary-button", type: "button", disabled: !canRun, title: !canRun ? runDisabledReason : "Start RCA", onClick: startRun, children: "Start RCA" }), (0, jsx_runtime_1.jsx)("button", { class: "secondary-button", type: "button", disabled: runState !== "running", onClick: stopRun, children: "Stop" })] }), !canRun && runDisabledReason ? (0, jsx_runtime_1.jsx)("p", { class: "run-disabled-note", children: runDisabledReason }) : null] }), (0, jsx_runtime_1.jsxs)("section", { class: "control-card chat-card", children: [(0, jsx_runtime_1.jsx)("div", { class: "section-heading", children: (0, jsx_runtime_1.jsx)("span", { children: "Chat history" }) }), (0, jsx_runtime_1.jsx)("div", { class: "session-history-list", children: sessionHistory.length ? sessionHistory.map((session) => ((0, jsx_runtime_1.jsxs)("article", { class: `session-history-item ${selectedHistoryId === session.id ? "is-selected" : ""}`.trim(), role: "button", tabIndex: 0, title: formatSessionHistoryTitle(session), onClick: () => openHistorySession(session.id), onKeyDown: (event) => {
+                                                    }, placeholder: ticketPlaceholder }))] }), (0, jsx_runtime_1.jsxs)("div", { class: "button-row", children: [(0, jsx_runtime_1.jsx)("button", { class: "primary-button", type: "button", disabled: !canRun, title: !canRun ? runDisabledReason : runButtonLabel, onClick: startRun, children: runButtonLabel }), (0, jsx_runtime_1.jsx)("button", { class: "secondary-button", type: "button", disabled: runState !== "running", onClick: stopRun, children: "Stop" })] }), !canRun && runDisabledReason ? (0, jsx_runtime_1.jsx)("p", { class: "run-disabled-note", children: runDisabledReason }) : null] }), (0, jsx_runtime_1.jsxs)("section", { class: "control-card chat-card", children: [(0, jsx_runtime_1.jsx)("div", { class: "section-heading", children: (0, jsx_runtime_1.jsx)("span", { children: "Chat history" }) }), (0, jsx_runtime_1.jsx)("div", { class: "session-history-list", children: sessionHistory.length ? sessionHistory.map((session) => ((0, jsx_runtime_1.jsxs)("article", { class: `session-history-item ${selectedHistoryId === session.id ? "is-selected" : ""}`.trim(), role: "button", tabIndex: 0, title: formatSessionHistoryTitle(session), onClick: () => openHistorySession(session.id), onKeyDown: (event) => {
                                                     if (event.key === "Enter" || event.key === " ") {
                                                         event.preventDefault();
                                                         openHistorySession(session.id);

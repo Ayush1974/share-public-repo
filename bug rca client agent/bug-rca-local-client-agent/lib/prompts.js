@@ -1,6 +1,7 @@
 const { DEFAULT_MODEL, PRODUCT_OPTIONS, SKILL_NAME } = require("./config");
 const { getDefaultPrompt } = require("./file-utils");
 const { normalizeIssueTitleValue, normalizeTicketIdValue } = require("./parsing");
+const { formatBugDbEvidence } = require("./bugdb-api");
 
 const EVIDENCE_FIRST_GUIDANCE = "Focus on comments, audit history, attachments, logs, and reproducible evidence before concluding RCA.";
 const LEGACY_PRODUCT_GENERIC_GUIDANCE = "Keep the RCA generic to the selected Oracle Restaurants product and highlight subsystem-specific evidence.";
@@ -141,11 +142,13 @@ function normalizeRequest(payload) {
   const bugDescription = String(payload.bugDescription || payload.description || "").trim();
   const manualDescriptionTitle = buildManualDescriptionTitle(bugDescription);
   const suppliedJiraEvidence = payload.jiraEvidence && typeof payload.jiraEvidence === "object" ? payload.jiraEvidence : null;
+  const suppliedBugDbEvidence = payload.bugDbEvidence && typeof payload.bugDbEvidence === "object" ? payload.bugDbEvidence : null;
   const issueTitle = normalizeIssueTitleValue(
     payload.issueTitle
     || payload.ticketTitle
     || payload.title
     || suppliedJiraEvidence?.summary
+    || suppliedBugDbEvidence?.synopsis
     || manualDescriptionTitle
     || ""
   );
@@ -182,6 +185,7 @@ function normalizeRequest(payload) {
     issueTitle,
     bugDescription,
     jiraEvidence: ticketSource === "description" ? buildManualBugEvidence(bugDescription, issueTitle) : suppliedJiraEvidence,
+    bugDbEvidence: ticketSource === "bugdb" ? suppliedBugDbEvidence : null,
     workspace,
     version,
     model,
@@ -340,7 +344,19 @@ function buildAnalysisPrompt(request, previousSession) {
       prefix.push(`Prefetched Jira Evidence:\n${jiraEvidenceBlock}`);
     }
   } else if (request.ticketId) {
-    prefix.push(`Jira Ticket ID / BugDB ID: ${request.ticketId}`);
+    if (request.bugDbEvidence) {
+      prefix.push(
+        "This ticket is BugDB-backed. Use the prefetched BugDB REST API evidence in this prompt as the required factual source for this run.",
+        "Do not try BugDB MCP or Jira MCP in this run. The local client agent already fetched the BugDB bug details directly before starting Codex.",
+        "If the prefetched BugDB evidence is incomplete, call that out explicitly instead of inventing missing bug facts."
+      );
+      const bugDbEvidenceBlock = formatBugDbEvidence(request.bugDbEvidence);
+      if (bugDbEvidenceBlock) {
+        prefix.push(`Prefetched BugDB Evidence:\n${bugDbEvidenceBlock}`);
+      }
+    } else {
+      prefix.push(`Jira Ticket ID / BugDB ID: ${request.ticketId}`);
+    }
   } else {
     prefix.push("If the request is generic, ask for the Jira Ticket ID / BugDB ID first.");
   }

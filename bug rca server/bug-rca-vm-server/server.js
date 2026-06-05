@@ -69,6 +69,11 @@ const {
 const {
   fetchDirectJiraIssueEvidence
 } = require("./lib/core/jira-api");
+// BugDB REST API client — fetches bug details directly from Oracle BugDB
+const {
+  fetchDirectBugDbEvidence,
+  resolveBugDbConfig
+} = require("./lib/core/bugdb-api");
 const {
   addGenericJiraMcpAliases,
   resolveTicketScopedMcpServers
@@ -129,6 +134,19 @@ const {
 
 const ACTIVE_SESSION_IDS = new Set();
 const RUNNING_SESSION_HANDLES = new Map();
+/**
+ * ACTIVE_USERS — live registry of who currently has the portal open.
+ *
+ * Key   : username or email (unique per person)
+ * Value : { name, username, lastSeen (epoch ms) }
+ *
+ * How it works:
+ *   - Browser sends POST /api/heartbeat every 30 seconds while the page is open.
+ *   - Each heartbeat upserts the user entry with lastSeen = now().
+ *   - On each heartbeat, entries older than 90 seconds are purged (3 missed pings = offline).
+ *   - GET /api/active-users returns the current snapshot for the "Live X online" chip in the UI.
+ */
+const ACTIVE_USERS = new Map();
 const NO_CACHE_HEADERS = {
   "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0",
   Pragma: "no-cache",
@@ -1598,15 +1616,41 @@ async function handleTicketEvidence(req, res) {
 
   const ticketSource = String(payload.ticketSource || payload.ticketType || "").trim().toLowerCase();
   const ticketId = String(payload.ticketId || "").trim();
-  if (ticketSource !== "jira") {
-    sendJson(res, 400, { error: "Only Jira evidence prefetch is supported by this endpoint." });
+  // Validate: only jira and bugdb are supported ticket sources
+  if (ticketSource !== "jira" && ticketSource !== "bugdb") {
+    sendJson(res, 400, { error: "Only jira and bugdb evidence prefetch is supported by this endpoint." });
     return;
   }
   if (!ticketId) {
-    sendJson(res, 400, { error: "Jira ticket ID is required." });
+    sendJson(res, 400, { error: "Ticket ID / Bug number is required." });
     return;
   }
 
+  // --- BugDB path ---
+  if (ticketSource === "bugdb") {
+    // Check credentials are configured before attempting fetch
+    if (!resolveBugDbConfig()) {
+      sendJson(res, 409, { error: "BugDB is not configured on this server. Set BUGDB_CLIENT_ID and BUGDB_CLIENT_SECRET." });
+      return;
+    }
+    try {
+      // Fetch bug details + download text attachments only (skip images/binaries)
+      const bugDbEvidence = await fetchDirectBugDbEvidence(ticketId, { downloadAttachments: true, textOnly: true });
+      const safeEvidence = sanitizeBugDbEvidenceForPrompt(bugDbEvidence);
+
+      sendJson(res, 200, {
+        ticketSource: "bugdb",
+        ticketId: safeEvidence.bugNumber || ticketId,
+        issueTitle: safeEvidence.synopsis || "",
+        bugDbEvidence: safeEvidence
+      });
+    } catch (error) {
+      sendJson(res, 409, { error: error.message || `Failed to fetch BugDB bug ${ticketId}.` });
+    }
+    return;
+  }
+
+  // --- Jira path ---
   try {
     const jiraEvidence = await fetchDirectJiraIssueEvidence(ticketId);
     sendJson(res, 200, {
@@ -1618,6 +1662,21 @@ async function handleTicketEvidence(req, res) {
   } catch (error) {
     sendJson(res, 409, { error: error.message || `Failed to fetch Jira issue ${ticketId} via the direct Jira API.` });
   }
+}
+
+function sanitizeBugDbEvidenceForPrompt(bugDbEvidence = {}) {
+  // Keep browser/session payloads free of server-local attachment paths.
+  const { attachmentDirectory, ...safeEvidence } = bugDbEvidence || {};
+  const cleanErrors = Object.fromEntries(
+    Object.entries(safeEvidence.endpointErrors || {}).map(([k, v]) => [
+      k,
+      v ? (/HTTP 404/i.test(v) ? `${k}: not available (HTTP 404)` : String(v).split("\n")[0].slice(0, 200)) : ""
+    ])
+  );
+  const cleanAttachments = (safeEvidence.attachments || []).map(
+    ({ localPath, _skipped, ...a }) => a
+  );
+  return { ...safeEvidence, attachments: cleanAttachments, endpointErrors: cleanErrors };
 }
 
 function handleRun(req, res, currentUser = null) {
@@ -1799,6 +1858,7 @@ function handleRun(req, res, currentUser = null) {
         previousSessionId: request.previousSessionId,
         continueSession: request.continueSession,
         jiraEvidence: request.jiraEvidence || jiraEvidence,
+        bugDbEvidence: request.bugDbEvidence || null,
         prompt
       },
       command: {
@@ -2061,7 +2121,12 @@ function handleRun(req, res, currentUser = null) {
     }
 
     function detachChildFromClient() {
+      if (clientDisconnected || finalized) {
+        return;
+      }
       clientDisconnected = true;
+      stopRequested = true;
+      terminateChildProcess(child);
     }
 
     req.on("aborted", detachChildFromClient);
@@ -2661,6 +2726,48 @@ async function handleRequest(req, res) {
       return;
     }
     await handleTicketEvidence(req, res);
+    return;
+  }
+
+  /**
+   * POST /api/heartbeat
+   * Called silently by the browser every 30 seconds while the portal tab is open.
+   * Records the authenticated user in ACTIVE_USERS and cleans up anyone
+   * who hasn't pinged in the last 90 seconds (= considered offline).
+   * Returns { ok: true } — the browser ignores the response body.
+   */
+  if (SERVE_UI && pathname === "/api/heartbeat" && req.method === "POST") {
+    const authenticatedUser = requireAuthenticatedUser(req, res);
+    if (!authenticatedUser) return;
+    const key = authenticatedUser.username || authenticatedUser.email || "unknown";
+    // Upsert this user's record with a fresh timestamp
+    ACTIVE_USERS.set(key, {
+      name: authenticatedUser.displayName || authenticatedUser.username || authenticatedUser.email || "Unknown",
+      username: key,
+      lastSeen: Date.now()
+    });
+    // Purge anyone who missed 3+ heartbeats (> 90 seconds since last ping)
+    const cutoff = Date.now() - 90000;
+    for (const [k, v] of ACTIVE_USERS.entries()) {
+      if (v.lastSeen < cutoff) ACTIVE_USERS.delete(k);
+    }
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  /**
+   * GET /api/active-users
+   * Returns the snapshot of who is currently online.
+   * Used by the "Live X online" chip in the top-right of the portal UI.
+   * Response: { count: number, users: [{ name, username, lastSeen }] }
+   */
+  if (SERVE_UI && pathname === "/api/active-users" && req.method === "GET") {
+    const authenticatedUser = requireAuthenticatedUser(req, res);
+    if (!authenticatedUser) return;
+    // Only include users seen within the last 90 seconds
+    const cutoff = Date.now() - 90000;
+    const users = Array.from(ACTIVE_USERS.values()).filter(u => u.lastSeen >= cutoff);
+    sendJson(res, 200, { count: users.length, users });
     return;
   }
 

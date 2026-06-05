@@ -13,5 +13,8 @@
     "install:agent:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\install-agent-startup.ps1",
     "install:agent:linux": "bash ./scripts/install-agent-startup-linux.sh",
     "install:agent:macos": "bash ./scripts/install-agent-startup-macos.sh"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16"
   }
 }
